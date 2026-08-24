@@ -88,28 +88,37 @@ async def check_channel_sub(user_id: int, channel: str) -> bool:
     except Exception:
         return False
 
-# --- BOSH ADMIN PANELI (`/admin`) ---
-@dp.message(Command("admin"), F.from_user.id == BOT_OWNER_ID)
-async def owner_panel(message: types.Message):
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT COUNT(*) FROM registered_groups") as cursor:
-            groups_count = (await cursor.fetchone())[0]
-        
-        async with db.execute("SELECT COUNT(DISTINCT user_id) FROM group_users") as cursor:
-            users_count = (await cursor.fetchone())[0]
+# --- `/start` VA `/admin` HANDLERI ---
+@dp.message(Command(commands=["start", "admin"]))
+async def start_and_admin_handler(message: types.Message):
+    # Agar xabar guruhda yozilgan bo'lsa
+    if message.chat.type in ["group", "supergroup"]:
+        await message.reply("🤖 Bot guruhda faol! Sozlamalarni ko'rish uchun /panel buyrug'ini yuboring.")
+        return
 
-    kb = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="📢 Рассылка по группам", callback_data="start_broadcast")]
-    ])
+    # Shaxsiy yozishmada (LS)
+    if message.from_user.id == BOT_OWNER_ID:
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute("SELECT COUNT(*) FROM registered_groups") as cursor:
+                groups_count = (await cursor.fetchone())[0]
+            
+            async with db.execute("SELECT COUNT(DISTINCT user_id) FROM group_users") as cursor:
+                users_count = (await cursor.fetchone())[0]
 
-    await message.reply(
-        f"👑 **Панель владельца бота**\n\n"
-        f"📊 **Статистика:**\n"
-        f"• Количество групп: **{groups_count}**\n"
-        f"• Уникальных пользователей: **{users_count}**",
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
+        kb = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="📢 Рассылка по группам", callback_data="start_broadcast")]
+        ])
+
+        await message.reply(
+            f"👑 **Панель владельца бота**\n\n"
+            f"📊 **Статистика:**\n"
+            f"• Количество групп: **{groups_count}**\n"
+            f"• Уникальных пользователей: **{users_count}**",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+    else:
+        await message.reply("👋 **Привет!** Я бот для управления доступом в группах.\n\nДобавьте меня в вашу группу и назначьте администратором, чтобы начать работу!", parse_mode="Markdown")
 
 @dp.callback_query(F.data == "start_broadcast", F.from_user.id == BOT_OWNER_ID)
 async def prompt_broadcast(call: types.CallbackQuery, state: FSMContext):
@@ -244,7 +253,7 @@ async def save_chan(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(f"✅ Обязательный канал сохранен: **{chan if chan else 'Отключен'}**", parse_mode="Markdown")
 
-# --- GURUHDAGI MANTIQ ---
+# --- GURUHDAGI O'LCHASH MANTIG'I ---
 @dp.message(F.new_chat_members)
 async def track_invites(message: types.Message):
     chat_id = message.chat.id
@@ -347,9 +356,9 @@ async def check_permissions(message: types.Message):
         await asyncio.sleep(5)
         await warning.delete()
 
-# --- RENDER PING DUMMY SERVER ---
+# --- RENDER WEB SERVER ---
 async def handle(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="Bot is running active!")
 
 async def start_web_server():
     app = web.Application()
