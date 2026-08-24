@@ -10,7 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Настройка логов
+# Loglarni sozlash
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -487,13 +487,16 @@ async def start_web_server():
 async def main():
     await init_db()
     
-    # Полный сброс вебхука и всех зависших обновлений
+    # Сброс прошлых обновлений и вебхуков
     await bot.delete_webhook(drop_pending_updates=True)
     
-    # Параллельный запуск веб-сервера и Polling
+    # Пауза для предотвращения конфликта сессий
+    await asyncio.sleep(2)
+    
+    # Запуск сервера и бот-поллинга
     await asyncio.gather(
         start_web_server(),
-        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(), handle_signals=False)
     )
 
 if __name__ == "__main__":
