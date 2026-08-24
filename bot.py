@@ -47,16 +47,16 @@ async def init_db():
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS registered_groups (
-                chat_id INTEGER PRIMARY KEY
+                chat_id INTEGER,
+                title TEXT,
+                added_by INTEGER,
+                PRIMARY KEY (chat_id)
             )
         """)
         await db.commit()
 
 async def get_group_settings(chat_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("INSERT OR IGNORE INTO registered_groups (chat_id) VALUES (?)", (chat_id,))
-        await db.commit()
-
         async with db.execute(
             "SELECT required_limit, duration_days, channel FROM group_settings WHERE chat_id=?", 
             (chat_id,)
@@ -88,37 +88,60 @@ async def check_channel_sub(user_id: int, channel: str) -> bool:
     except Exception:
         return False
 
-# --- `/start` VA `/admin` HANDLERI ---
-@dp.message(Command(commands=["start", "admin"]))
-async def start_and_admin_handler(message: types.Message):
-    # Agar xabar guruhda yozilgan bo'lsa
+# --- `/start` HANDLERI ---
+@dp.message(Command("start"))
+async def start_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    
     if message.chat.type in ["group", "supergroup"]:
         await message.reply("🤖 Bot guruhda faol! Sozlamalarni ko'rish uchun /panel buyrug'ini yuboring.")
         return
 
-    # Shaxsiy yozishmada (LS)
+    # Shaxsiy chatingizda foydalanuvchi menusi
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="⚙️ Guruhlarni boshqarish", callback_data="my_groups")],
+        [types.InlineKeyboardButton(text="➕ Botni guruhga qo'shish", url=f"https://t.me/{(await bot.get_me()).username}?startgroup=true")]
+    ])
+
     if message.from_user.id == BOT_OWNER_ID:
-        async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute("SELECT COUNT(*) FROM registered_groups") as cursor:
-                groups_count = (await cursor.fetchone())[0]
-            
-            async with db.execute("SELECT COUNT(DISTINCT user_id) FROM group_users") as cursor:
-                users_count = (await cursor.fetchone())[0]
+        kb.inline_keyboard.append([types.InlineKeyboardButton(text="👑 Bosh Admin Paneli", callback_data="owner_admin")])
 
-        kb = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="📢 Рассылка по группам", callback_data="start_broadcast")]
-        ])
+    await message.reply(
+        f"👋 **Xush kelibsiz, {message.from_user.first_name}!**\n\n"
+        f"Ushbu bot orqali guruhlaringizda **odam qo'shish majburiyati** va **majburiy kanal obunasini** sozlashingiz mumkin.\n\n"
+        f"Boshlash uchun botni guruhingizga qo'shing va **Admin** huquqini bering!",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
 
-        await message.reply(
-            f"👑 **Панель владельца бота**\n\n"
-            f"📊 **Статистика:**\n"
-            f"• Количество групп: **{groups_count}**\n"
-            f"• Уникальных пользователей: **{users_count}**",
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
+# --- BOSH ADMIN PANELI (`/admin`) ---
+@dp.message(Command("admin"), F.from_user.id == BOT_OWNER_ID)
+@dp.callback_query(F.data == "owner_admin", F.from_user.id == BOT_OWNER_ID)
+async def owner_panel(event: types.Message | types.CallbackQuery):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT COUNT(*) FROM registered_groups") as cursor:
+            groups_count = (await cursor.fetchone())[0]
+        
+        async with db.execute("SELECT COUNT(DISTINCT user_id) FROM group_users") as cursor:
+            users_count = (await cursor.fetchone())[0]
+
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="📢 Рассылка по группам", callback_data="start_broadcast")],
+        [types.InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="back_to_start")]
+    ])
+
+    text = (
+        f"👑 **Панель владельца бота**\n\n"
+        f"📊 **Статистика:**\n"
+        f"• Количество групп: **{groups_count}**\n"
+        f"• Уникальных пользователей: **{users_count}**"
+    )
+
+    if isinstance(event, types.CallbackQuery):
+        await event.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        await event.answer()
     else:
-        await message.reply("👋 **Привет!** Я бот для управления доступом в группах.\n\nДобавьте меня в вашу группу и назначьте администратором, чтобы начать работу!", parse_mode="Markdown")
+        await event.reply(text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data == "start_broadcast", F.from_user.id == BOT_OWNER_ID)
 async def prompt_broadcast(call: types.CallbackQuery, state: FSMContext):
@@ -151,45 +174,87 @@ async def process_broadcast(message: types.Message, state: FSMContext):
         parse_mode="Markdown"
     )
 
-# --- GURUH ADMINLARI PANELI (`/panel`) ---
-@dp.message(Command("panel"), F.chat.type.in_({"group", "supergroup"}))
-async def open_group_panel(message: types.Message):
-    if not await is_group_admin(bot, message.chat.id, message.from_user.id):
-        return await message.reply("⚠️ Эта команда доступна только администраторам группы!")
+# --- FOYDALANUVCHINING GURUHLARI MENYUSI (LS) ---
+@dp.callback_query(F.data == "my_groups")
+@dp.callback_query(F.data == "back_to_start")
+async def show_user_groups(call: types.CallbackQuery):
+    if call.data == "back_to_start":
+        kb = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="⚙️ Guruhlarni boshqarish", callback_data="my_groups")],
+            [types.InlineKeyboardButton(text="➕ Botni guruhga qo'shish", url=f"https://t.me/{(await bot.get_me()).username}?startgroup=true")]
+        ])
+        if call.from_user.id == BOT_OWNER_ID:
+            kb.inline_keyboard.append([types.InlineKeyboardButton(text="👑 Bosh Admin Paneli", callback_data="owner_admin")])
 
-    settings = await get_group_settings(message.chat.id)
-    channel_display = settings['channel'] if settings['channel'] else "Не настроен"
+        await call.message.edit_text(
+            f"👋 **Xush kelibsiz, {call.from_user.first_name}!**\n\n"
+            f"Ushbu bot orqali guruhlaringizda **odam qo'shish majburiyati** va **majburiy kanal obunasini** sozlashingiz mumkin.\n\n"
+            f"Boshlash uchun botni guruhingizga qo'shing va **Admin** huquqini bering!",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        await call.answer()
+        return
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT chat_id, title FROM registered_groups WHERE added_by=?", (call.from_user.id,)) as cursor:
+            groups = await cursor.fetchall()
+
+    buttons = []
+    for g_id, g_title in groups:
+        buttons.append([types.InlineKeyboardButton(text=f"👥 {g_title}", callback_data=f"manage_g:{g_id}")])
+
+    buttons.append([types.InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_to_start")])
+    kb = types.InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    if not groups:
+        await call.message.edit_text(
+            "❌ **Siz hali hech qaysi guruhga botni ulaganingiz yo'q!**\n\n"
+            "Botni guruhingizga qo'shib, Admin huquqini bersangiz, bu yerda guruhingiz paydo bo'ladi.",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+    else:
+        await call.message.edit_text("📋 **Sozlash uchun guruhingizni tanlang:**", reply_markup=kb, parse_mode="Markdown")
+    await call.answer()
+
+# --- GURUH SOZLAMALARI MENYUSI ---
+@dp.callback_query(F.data.startswith("manage_g:"))
+async def manage_group_menu(call: types.CallbackQuery):
+    chat_id = int(call.data.split(":")[1])
+    settings = await get_group_settings(chat_id)
+    
+    channel_display = settings['channel'] if settings['channel'] else "❌ O'chirilgan"
 
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="👥 Лимит инвайтов", callback_data=f"set_limit:{message.chat.id}")],
-        [types.InlineKeyboardButton(text="⏳ Срок доступа (дни)", callback_data=f"set_days:{message.chat.id}")],
-        [types.InlineKeyboardButton(text="📢 Обязательный канал", callback_data=f"set_chan:{message.chat.id}")]
+        [types.InlineKeyboardButton(text="👥 Odam qo'shish limitini o'zgartirish", callback_data=f"set_limit:{chat_id}")],
+        [types.InlineKeyboardButton(text="⏳ Ruxsat muddatini o'zgartirish (kun)", callback_data=f"set_days:{chat_id}")],
+        [types.InlineKeyboardButton(text="📢 Majburiy kanalni o'zgartirish", callback_data=f"set_chan:{chat_id}")],
+        [types.InlineKeyboardButton(text="⬅️ Guruhlar ro'yxatiga qaytish", callback_data="my_groups")]
     ])
 
-    await message.reply(
-        f"⚙️ **Настройки этой группы**\n\n"
-        f"• Требуется инвайтов: **{settings['limit']} чел.**\n"
-        f"• Срок доступа: **{settings['days']} дней**\n"
-        f"• Обязательный канал: **{channel_display}**",
+    await call.message.edit_text(
+        f"⚙️ **Guruh Sozlamalari**\n\n"
+        f"• **Majburiy odam qo'shish soni:** {settings['limit']} ta\n"
+        f"• **Yozish ruxsati beriladigan muddat:** {settings['days']} kun\n"
+        f"• **Majburiy kanal:** {channel_display}",
         reply_markup=kb,
         parse_mode="Markdown"
     )
+    await call.answer()
 
 @dp.callback_query(F.data.startswith("set_limit:"))
 async def process_limit_btn(call: types.CallbackQuery, state: FSMContext):
     chat_id = int(call.data.split(":")[1])
-    if not await is_group_admin(bot, chat_id, call.from_user.id):
-        return await call.answer("Вы не админ!", show_alert=True)
-    
     await state.update_data(target_chat_id=chat_id)
     await state.set_state(GroupSettingsState.waiting_for_limit)
-    await call.message.answer("Введите новое количество инвайтов:")
+    await call.message.answer("✏️ **Foydalanuvchi guruhga nechta odam qo'shishi kerak?** (Raqam yuboring, masalan: 5):", parse_mode="Markdown")
     await call.answer()
 
 @dp.message(GroupSettingsState.waiting_for_limit)
 async def save_limit(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
-        return await message.answer("Введите только число!")
+        return await message.answer("⚠️ Iltimos, faqat raqam yozing!")
     
     data = await state.get_data()
     chat_id = data.get("target_chat_id")
@@ -199,23 +264,21 @@ async def save_limit(message: types.Message, state: FSMContext):
         await db.commit()
         
     await state.clear()
-    await message.answer(f"✅ Лимит установлен: **{message.text} чел.**", parse_mode="Markdown")
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Sozlamalarga qaytish", callback_data=f"manage_g:{chat_id}")]])
+    await message.answer(f"✅ Odam qo'shish limiti **{message.text} ta** qilib belgilandi!", reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("set_days:"))
 async def process_days_btn(call: types.CallbackQuery, state: FSMContext):
     chat_id = int(call.data.split(":")[1])
-    if not await is_group_admin(bot, chat_id, call.from_user.id):
-        return await call.answer("Вы не админ!", show_alert=True)
-    
     await state.update_data(target_chat_id=chat_id)
     await state.set_state(GroupSettingsState.waiting_for_days)
-    await call.message.answer("Введите количество дней доступа:")
+    await call.message.answer("✏️ **Odam qo'shgandan so'ng necha kun yozishga ruxsat berilsin?** (Raqam yuboring, masalan: 7):", parse_mode="Markdown")
     await call.answer()
 
 @dp.message(GroupSettingsState.waiting_for_days)
 async def save_days(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
-        return await message.answer("Введите только число!")
+        return await message.answer("⚠️ Iltimos, faqat raqam yozing!")
     
     data = await state.get_data()
     chat_id = data.get("target_chat_id")
@@ -225,17 +288,15 @@ async def save_days(message: types.Message, state: FSMContext):
         await db.commit()
         
     await state.clear()
-    await message.answer(f"✅ Срок доступа установлен: **{message.text} дней**", parse_mode="Markdown")
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Sozlamalarga qaytish", callback_data=f"manage_g:{chat_id}")]])
+    await message.answer(f"✅ Ruxsat muddati **{message.text} kun** qilib belgilandi!", reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("set_chan:"))
 async def process_chan_btn(call: types.CallbackQuery, state: FSMContext):
     chat_id = int(call.data.split(":")[1])
-    if not await is_group_admin(bot, chat_id, call.from_user.id):
-        return await call.answer("Вы не админ!", show_alert=True)
-    
     await state.update_data(target_chat_id=chat_id)
     await state.set_state(GroupSettingsState.waiting_for_channel)
-    await call.message.answer("Отправьте @username канала (или '0' чтобы отключить):")
+    await call.message.answer("✏️ **Majburiy kanal usernamesini yuboring** (Masalan: `@kanal_username` yoki o'chirish uchun `0` yuboring):", parse_mode="Markdown")
     await call.answer()
 
 @dp.message(GroupSettingsState.waiting_for_channel)
@@ -251,9 +312,38 @@ async def save_chan(message: types.Message, state: FSMContext):
         await db.commit()
         
     await state.clear()
-    await message.answer(f"✅ Обязательный канал сохранен: **{chan if chan else 'Отключен'}**", parse_mode="Markdown")
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Sozlamalarga qaytish", callback_data=f"manage_g:{chat_id}")]])
+    await message.answer(f"✅ Majburiy kanal **{chan if chan else 'O-chirilgan'}** qilindi!", reply_markup=kb, parse_mode="Markdown")
 
-# --- GURUHDAGI O'LCHASH MANTIG'I ---
+# --- GURUH VA BOT HODISALARI ---
+@dp.my_chat_member()
+async def bot_added_to_group(event: types.ChatMemberUpdated):
+    if event.chat.type in ["group", "supergroup"] and event.new_chat_member.status in ["administrator", "member"]:
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO registered_groups (chat_id, title, added_by) VALUES (?, ?, ?)",
+                (event.chat.id, event.chat.title, event.from_user.id)
+            )
+            await db.commit()
+        await get_group_settings(event.chat.id)
+
+@dp.message(Command("panel"), F.chat.type.in_({"group", "supergroup"}))
+async def open_group_panel_chat(message: types.Message):
+    if not await is_group_admin(bot, message.chat.id, message.from_user.id):
+        return await message.reply("⚠️ Bu buyruq faqat guruh adminlari uchun!")
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO registered_groups (chat_id, title, added_by) VALUES (?, ?, ?)",
+            (message.chat.id, message.chat.title, message.from_user.id)
+        )
+        await db.commit()
+
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="⚙️ Sozlamalarni shaxsiyda ochish", url=f"https://t.me/{(await bot.get_me()).username}?start=my_groups")]
+    ])
+    await message.reply("⚙️ Guruhingizni sozlash uchun quyidagi tugma orqali botning shaxsiy chatiga o'ting:", reply_markup=kb)
+
 @dp.message(F.new_chat_members)
 async def track_invites(message: types.Message):
     chat_id = message.chat.id
@@ -279,7 +369,7 @@ async def track_invites(message: types.Message):
                         (chat_id, inviter.id, expires_at)
                     )
                     await message.answer(
-                        f"🎉 {inviter.full_name}, вы выполнили условие ({settings['limit']} чел.)! Доступ открыт на **{settings['days']} дней**.",
+                        f"🎉 {inviter.full_name}, siz shartni bajardingiz ({settings['limit']} ta odam)! Ruxsat **{settings['days']} kun**ga berildi.",
                         parse_mode="Markdown"
                     )
                 else:
@@ -308,10 +398,10 @@ async def check_permissions(message: types.Message):
         kb = None
         if settings['channel'].startswith("@"):
             kb = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Подписаться", url=f"https://t.me/{settings['channel'][1:]}")]
+                [types.InlineKeyboardButton(text="📢 Obuna bo'lish", url=f"https://t.me/{settings['channel'][1:]}")]
             ])
         warning = await message.answer(
-            f"⚠️ {message.from_user.full_name}, сначала подпишитесь на обязательный канал!", reply_markup=kb
+            f"⚠️ {message.from_user.full_name}, yozish uchun avval majburiy kanalga obuna bo'ling!", reply_markup=kb
         )
         await asyncio.sleep(5)
         await warning.delete()
@@ -350,13 +440,13 @@ async def check_permissions(message: types.Message):
             
         remaining = settings['limit'] - invites_count
         warning = await message.answer(
-            f"⚠️ {message.from_user.full_name}, вам нужно добавить ещё **{remaining}** чел. (Доступ даётся на {settings['days']} дней)",
+            f"⚠️ {message.from_user.full_name}, yozish uchun guruhga yana **{remaining}** ta odam qo'shishingiz kerak! (Ruxsat {settings['days']} kunga beriladi)",
             parse_mode="Markdown"
         )
         await asyncio.sleep(5)
         await warning.delete()
 
-# --- RENDER WEB SERVER ---
+# --- WEB SERVER & START ---
 async def handle(request):
     return web.Response(text="Bot is running active!")
 
