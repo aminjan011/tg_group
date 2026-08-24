@@ -119,12 +119,14 @@ async def start_handler(message: types.Message, state: FSMContext):
     if message.from_user.id == BOT_OWNER_ID:
         kb.inline_keyboard.append([types.InlineKeyboardButton(text="👑 Bosh Admin Paneli", callback_data="owner_admin")])
 
+    user_name = message.from_user.full_name.replace("<", "&lt;").replace(">", "&gt;")
+
     await message.reply(
-        f"👋 **Xush kelibsiz, {message.from_user.first_name}!**\n\n"
-        f"Ushbu bot orqali guruhlaringizda **odam qo'shish majburiyati** va **majburiy kanal obunasini** sozlashingiz mumkin.\n\n"
-        f"Boshlash uchun botni guruhingizga qo'shing va **Admin** huquqini bering!",
+        f"👋 <b>Xush kelibsiz, {user_name}!</b>\n\n"
+        f"Ushbu bot orqali guruhlaringizda <b>odam qo'shish majburiyati</b> va <b>majburiy kanal obunasini</b> sozlashingiz mumkin.\n\n"
+        f"Boshlash uchun botni guruhingizga qo'shing va <b>Admin</b> huquqini bering!",
         reply_markup=kb,
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 # --- BOSH ADMIN PANELI ---
@@ -144,17 +146,17 @@ async def owner_panel(event: types.Message | types.CallbackQuery):
     ])
 
     text = (
-        f"👑 **Bosh Admin Paneli**\n\n"
-        f"📊 **Statistika:**\n"
-        f"• Guruhlar soni: **{groups_count}**\n"
-        f"• Unikal foydalanuvchilar: **{users_count}**"
+        f"👑 <b>Bosh Admin Paneli</b>\n\n"
+        f"📊 <b>Statistika:</b>\n"
+        f"• Guruhlar soni: <b>{groups_count}</b>\n"
+        f"• Unikal foydalanuvchilar: <b>{users_count}</b>"
     )
 
     if isinstance(event, types.CallbackQuery):
-        await event.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        await event.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
         await event.answer()
     else:
-        await event.reply(text, reply_markup=kb, parse_mode="Markdown")
+        await event.reply(text, reply_markup=kb, parse_mode="HTML")
 
 @dp.callback_query(F.data == "start_broadcast", F.from_user.id == BOT_OWNER_ID)
 async def prompt_broadcast(call: types.CallbackQuery, state: FSMContext):
@@ -181,10 +183,10 @@ async def process_broadcast(message: types.Message, state: FSMContext):
             failed += 1
 
     await status_msg.edit_text(
-        f"✅ **Xabar yuborish yakunlandi!**\n\n"
-        f"• Muvaffaqiyatli: **{success}** ta guruh\n"
-        f"• Xatolik: **{failed}** ta",
-        parse_mode="Markdown"
+        f"✅ <b>Xabar yuborish yakunlandi!</b>\n\n"
+        f"• Muvaffaqiyatli: <b>{success}</b> ta guruh\n"
+        f"• Xatolik: <b>{failed}</b> ta",
+        parse_mode="HTML"
     )
 
 # --- FOYDALANUVCHINING GURUHLARI MENYUSI ---
@@ -200,12 +202,14 @@ async def show_user_groups(call: types.CallbackQuery):
         if call.from_user.id == BOT_OWNER_ID:
             kb.inline_keyboard.append([types.InlineKeyboardButton(text="👑 Bosh Admin Paneli", callback_data="owner_admin")])
 
+        user_name = call.from_user.full_name.replace("<", "&lt;").replace(">", "&gt;")
+
         await call.message.edit_text(
-            f"👋 **Xush kelibsiz, {call.from_user.first_name}!**\n\n"
-            f"Ushbu bot orqali guruhlaringizda **odam qo'shish majburiyati** va **majburiy kanal obunasini** sozlashingiz mumkin.\n\n"
-            f"Boshlash uchun botni guruhingizga qo'shing va **Admin** huquqini bering!",
+            f"👋 <b>Xush kelibsiz, {user_name}!</b>\n\n"
+            f"Ushbu bot orqali guruhlaringizda <b>odam qo'shish majburiyati</b> va <b>majburiy kanal obunasini</b> sozlashingiz mumkin.\n\n"
+            f"Boshlash uchun botni guruhingizga qo'shing va <b>Admin</b> huquqini bering!",
             reply_markup=kb,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
         await call.answer()
         return
@@ -224,13 +228,13 @@ async def show_user_groups(call: types.CallbackQuery):
 
     if not groups:
         await call.message.edit_text(
-            "❌ **Siz hali hech qaysi guruhga botni ulaganingiz yo'q!**\n\n"
-            "Botni guruhingizga qo'shib, Admin huquqini bersangiz yoki guruhda `/panel` deb yozsangiz, bu yerda guruhingiz paydo bo'ladi.",
+            "❌ <b>Siz hali hech qaysi guruhga botni ulaganingiz yo'q!</b>\n\n"
+            "Botni guruhingizga qo'shib, Admin huquqini bersangiz yoki guruhda <code>/panel</code> deb yozsangiz, bu yerda guruhingiz paydo bo'ladi.",
             reply_markup=kb,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     else:
-        await call.message.edit_text("📋 **Sozlash uchun guruhingizni tanlang:**", reply_markup=kb, parse_mode="Markdown")
+        await call.message.edit_text("📋 <b>Sozlash uchun guruhingizni tanlang:</b>", reply_markup=kb, parse_mode="HTML")
     await call.answer()
 
 # --- GURUH SOZLAMALARI ---
@@ -249,12 +253,12 @@ async def manage_group_menu(call: types.CallbackQuery):
     ])
 
     await call.message.edit_text(
-        f"⚙️ **Guruh Sozlamalari**\n\n"
-        f"• **Majburiy odam qo'shish soni:** {settings['limit']} ta\n"
-        f"• **Yozish ruxsati beriladigan muddat:** {settings['days']} kun\n"
-        f"• **Majburiy kanal:** {channel_display}",
+        f"⚙️ <b>Guruh Sozlamalari</b>\n\n"
+        f"• <b>Majburiy odam qo'shish soni:</b> {settings['limit']} ta\n"
+        f"• <b>Yozish ruxsati beriladigan muddat:</b> {settings['days']} kun\n"
+        f"• <b>Majburiy kanal:</b> {channel_display}",
         reply_markup=kb,
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     await call.answer()
 
@@ -263,7 +267,7 @@ async def process_limit_btn(call: types.CallbackQuery, state: FSMContext):
     chat_id = int(call.data.split(":")[1])
     await state.update_data(target_chat_id=chat_id)
     await state.set_state(GroupSettingsState.waiting_for_limit)
-    await call.message.answer("✏️ **Foydalanuvchi guruhga nechta odam qo'shishi kerak?** (Raqam yuboring, masalan: 5):", parse_mode="Markdown")
+    await call.message.answer("✏️ <b>Foydalanuvchi guruhga nechta odam qo'shishi kerak?</b> (Raqam yuboring, masalan: 5):", parse_mode="HTML")
     await call.answer()
 
 @dp.message(GroupSettingsState.waiting_for_limit)
@@ -280,14 +284,14 @@ async def save_limit(message: types.Message, state: FSMContext):
         
     await state.clear()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Sozlamalarga qaytish", callback_data=f"manage_g:{chat_id}")]])
-    await message.answer(f"✅ Odam qo'shish limiti **{message.text} ta** qilib belgilandi!", reply_markup=kb, parse_mode="Markdown")
+    await message.answer(f"✅ Odam qo'shish limiti <b>{message.text} ta</b> qilib belgilandi!", reply_markup=kb, parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("set_days:"))
 async def process_days_btn(call: types.CallbackQuery, state: FSMContext):
     chat_id = int(call.data.split(":")[1])
     await state.update_data(target_chat_id=chat_id)
     await state.set_state(GroupSettingsState.waiting_for_days)
-    await call.message.answer("✏️ **Odam qo'shgandan so'ng necha kun yozishga ruxsat berilsin?** (Raqam yuboring, masalan: 7):", parse_mode="Markdown")
+    await call.message.answer("✏️ <b>Odam qo'shgandan so'ng necha kun yozishga ruxsat berilsin?</b> (Raqam yuboring, masalan: 7):", parse_mode="HTML")
     await call.answer()
 
 @dp.message(GroupSettingsState.waiting_for_days)
@@ -304,14 +308,14 @@ async def save_days(message: types.Message, state: FSMContext):
         
     await state.clear()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Sozlamalarga qaytish", callback_data=f"manage_g:{chat_id}")]])
-    await message.answer(f"✅ Ruxsat muddati **{message.text} kun** qilib belgilandi!", reply_markup=kb, parse_mode="Markdown")
+    await message.answer(f"✅ Ruxsat muddati <b>{message.text} kun</b> qilib belgilandi!", reply_markup=kb, parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("set_chan:"))
 async def process_chan_btn(call: types.CallbackQuery, state: FSMContext):
     chat_id = int(call.data.split(":")[1])
     await state.update_data(target_chat_id=chat_id)
     await state.set_state(GroupSettingsState.waiting_for_channel)
-    await call.message.answer("✏️ **Majburiy kanal usernamesini yuboring** (Masalan: `@kanal_username` yoki o'chirish uchun `0` yuboring):", parse_mode="Markdown")
+    await call.message.answer("✏️ <b>Majburiy kanal usernamesini yuboring</b> (Masalan: <code>@kanal_username</code> yoki o'chirish uchun <code>0</code> yuboring):", parse_mode="HTML")
     await call.answer()
 
 @dp.message(GroupSettingsState.waiting_for_channel)
@@ -328,7 +332,7 @@ async def save_chan(message: types.Message, state: FSMContext):
         
     await state.clear()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Sozlamalarga qaytish", callback_data=f"manage_g:{chat_id}")]])
-    await message.answer(f"✅ Majburiy kanal **{chan if chan else 'O-chirilgan'}** qilindi!", reply_markup=kb, parse_mode="Markdown")
+    await message.answer(f"✅ Majburiy kanal <b>{chan if chan else 'O-chirilgan'}</b> qilindi!", reply_markup=kb, parse_mode="HTML")
 
 # --- GURUH HODISALARI ---
 @dp.my_chat_member()
@@ -384,9 +388,10 @@ async def track_invites(message: types.Message):
                         "INSERT OR REPLACE INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES (?, ?, 0, ?)",
                         (chat_id, inviter.id, expires_at)
                     )
+                    user_name = inviter.full_name.replace("<", "&lt;").replace(">", "&gt;")
                     await message.answer(
-                        f"🎉 {inviter.full_name}, siz shartni bajardingiz ({settings['limit']} ta odam)! Ruxsat **{settings['days']} kun**ga berildi.",
-                        parse_mode="Markdown"
+                        f"🎉 {user_name}, siz shartni bajardingiz ({settings['limit']} ta odam)! Ruxsat <b>{settings['days']} kun</b>ga berildi.",
+                        parse_mode="HTML"
                     )
                 else:
                     await db.execute(
@@ -405,6 +410,7 @@ async def check_permissions(message: types.Message):
 
     settings = await get_group_settings(chat_id)
     now = datetime.now()
+    user_name = message.from_user.full_name.replace("<", "&lt;").replace(">", "&gt;")
 
     if not await check_channel_sub(user_id, settings['channel']):
         try:
@@ -417,7 +423,7 @@ async def check_permissions(message: types.Message):
                 [types.InlineKeyboardButton(text="📢 Obuna bo'lish", url=f"https://t.me/{settings['channel'][1:]}")]
             ])
         warning = await message.answer(
-            f"⚠️ {message.from_user.full_name}, yozish uchun avval majburiy kanalga obuna bo'ling!", reply_markup=kb
+            f"⚠️ <b>{user_name}</b>, yozish uchun avval majburiy kanalga obuna bo'ling!", reply_markup=kb, parse_mode="HTML"
         )
         await asyncio.sleep(5)
         await warning.delete()
@@ -456,8 +462,8 @@ async def check_permissions(message: types.Message):
             
         remaining = settings['limit'] - invites_count
         warning = await message.answer(
-            f"⚠️ {message.from_user.full_name}, yozish uchun guruhga yana **{remaining}** ta odam qo'shishingiz kerak! (Ruxsat {settings['days']} kunga beriladi)",
-            parse_mode="Markdown"
+            f"⚠️ <b>{user_name}</b>, yozish uchun guruhga yana <b>{remaining}</b> ta odam qo'shishingiz kerak! (Ruxsat {settings['days']} kunga beriladi)",
+            parse_mode="HTML"
         )
         await asyncio.sleep(5)
         await warning.delete()
@@ -468,7 +474,6 @@ async def handle(request):
 
 async def start_web_server():
     app = web.Application()
-    # Faqat GET yo'nalishi yetarli (aiohttp HEAD so'rovlarni o'zi boshqaradi)
     app.router.add_get("/", handle)
     
     runner = web.AppRunner(app)
@@ -482,10 +487,10 @@ async def start_web_server():
 async def main():
     await init_db()
     
-    # 1. Eski webhook va kutilayotgan barcha xabarlarni to'liq tozalash
+    # Eski webhook va kutilayotgan barcha xabarlarni to'liq tozalash
     await bot.delete_webhook(drop_pending_updates=True)
     
-    # 2. Web server va Polling-ni parallel ishga tushirish
+    # Web server va Polling-ni parallel ishga tushirish
     await asyncio.gather(
         start_web_server(),
         dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
