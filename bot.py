@@ -9,7 +9,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_OWNER_ID = int(os.getenv("ADMIN_ID", "0"))
 
@@ -25,7 +24,7 @@ class GroupSettingsState(StatesGroup):
 class BroadcastState(StatesGroup):
     waiting_for_message = State()
 
-# --- BAZA BILAN ISHLASH ---
+# --- BAZANI MIGRATSIYA BILAN YARATISH ---
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
@@ -47,12 +46,22 @@ async def init_db():
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS registered_groups (
-                chat_id INTEGER,
-                title TEXT,
-                added_by INTEGER,
-                PRIMARY KEY (chat_id)
+                chat_id INTEGER PRIMARY KEY,
+                title TEXT DEFAULT '',
+                added_by INTEGER DEFAULT 0
             )
         """)
+        await db.commit()
+
+        # Eskirgan bazalarni avtomatik yangilash (Migratsiya)
+        try:
+            await db.execute("ALTER TABLE registered_groups ADD COLUMN title TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE registered_groups ADD COLUMN added_by INTEGER DEFAULT 0")
+        except Exception:
+            pass
         await db.commit()
 
 async def get_group_settings(chat_id: int):
@@ -97,7 +106,6 @@ async def start_handler(message: types.Message, state: FSMContext):
         await message.reply("🤖 Bot guruhda faol! Sozlamalarni ko'rish uchun /panel buyrug'ini yuboring.")
         return
 
-    # Shaxsiy chatingizda foydalanuvchi menusi
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="⚙️ Guruhlarni boshqarish", callback_data="my_groups")],
         [types.InlineKeyboardButton(text="➕ Botni guruhga qo'shish", url=f"https://t.me/{(await bot.get_me()).username}?startgroup=true")]
@@ -114,7 +122,7 @@ async def start_handler(message: types.Message, state: FSMContext):
         parse_mode="Markdown"
     )
 
-# --- BOSH ADMIN PANELI (`/admin`) ---
+# --- BOSH ADMIN PANELI ---
 @dp.message(Command("admin"), F.from_user.id == BOT_OWNER_ID)
 @dp.callback_query(F.data == "owner_admin", F.from_user.id == BOT_OWNER_ID)
 async def owner_panel(event: types.Message | types.CallbackQuery):
@@ -174,7 +182,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
         parse_mode="Markdown"
     )
 
-# --- FOYDALANUVCHINING GURUHLARI MENYUSI (LS) ---
+# --- FOYDALANUVCHINING GURUHLARI MENYUSI ---
 @dp.callback_query(F.data == "my_groups")
 @dp.callback_query(F.data == "back_to_start")
 async def show_user_groups(call: types.CallbackQuery):
@@ -202,7 +210,8 @@ async def show_user_groups(call: types.CallbackQuery):
 
     buttons = []
     for g_id, g_title in groups:
-        buttons.append([types.InlineKeyboardButton(text=f"👥 {g_title}", callback_data=f"manage_g:{g_id}")])
+        name = g_title if g_title else f"Guruh ({g_id})"
+        buttons.append([types.InlineKeyboardButton(text=f"👥 {name}", callback_data=f"manage_g:{g_id}")])
 
     buttons.append([types.InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_to_start")])
     kb = types.InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -210,7 +219,7 @@ async def show_user_groups(call: types.CallbackQuery):
     if not groups:
         await call.message.edit_text(
             "❌ **Siz hali hech qaysi guruhga botni ulaganingiz yo'q!**\n\n"
-            "Botni guruhingizga qo'shib, Admin huquqini bersangiz, bu yerda guruhingiz paydo bo'ladi.",
+            "Botni guruhingizga qo'shib, Admin huquqini bersangiz yoki guruhda `/panel` deb yozsangiz, bu yerda guruhingiz paydo bo'ladi.",
             reply_markup=kb,
             parse_mode="Markdown"
         )
@@ -218,7 +227,7 @@ async def show_user_groups(call: types.CallbackQuery):
         await call.message.edit_text("📋 **Sozlash uchun guruhingizni tanlang:**", reply_markup=kb, parse_mode="Markdown")
     await call.answer()
 
-# --- GURUH SOZLAMALARI MENYUSI ---
+# --- GURUH SOZLAMALARI ---
 @dp.callback_query(F.data.startswith("manage_g:"))
 async def manage_group_menu(call: types.CallbackQuery):
     chat_id = int(call.data.split(":")[1])
@@ -315,7 +324,7 @@ async def save_chan(message: types.Message, state: FSMContext):
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Sozlamalarga qaytish", callback_data=f"manage_g:{chat_id}")]])
     await message.answer(f"✅ Majburiy kanal **{chan if chan else 'O-chirilgan'}** qilindi!", reply_markup=kb, parse_mode="Markdown")
 
-# --- GURUH VA BOT HODISALARI ---
+# --- GURUH VA HODISALAR ---
 @dp.my_chat_member()
 async def bot_added_to_group(event: types.ChatMemberUpdated):
     if event.chat.type in ["group", "supergroup"] and event.new_chat_member.status in ["administrator", "member"]:
