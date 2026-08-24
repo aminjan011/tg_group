@@ -10,8 +10,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # Render Environment Variables orqali olinadi
-BOT_TOKEN = os.getenv("8635601259:AAHHRqGDBenQEOh1cM8ajnhbepZIjjhJS-8")
-BOT_OWNER_ID = int(os.getenv("1112793157", "0"))
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_OWNER_ID = int(os.getenv("ADMIN_ID", "0"))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
