@@ -397,6 +397,14 @@ async def open_group_panel_chat(message: types.Message):
     ])
     await message.reply("⚙️ Для настройки группы перейдите в личные сообщения бота по кнопке ниже:", reply_markup=kb)
 
+# Guruhi tark etgan a'zolar xabarini o'chirish
+@dp.message(F.left_chat_member)
+async def delete_left_chat_member_message(message: types.Message):
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
 @dp.message(F.new_chat_members)
 async def track_invites(message: types.Message):
     chat_id = message.chat.id
@@ -432,6 +440,12 @@ async def track_invites(message: types.Message):
                         (chat_id, inviter.id, new_count)
                     )
                 await db.commit()
+
+    # Yangi a'zo qo'shilganligi haqidagi Telegram xabarini o'chirish
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def check_permissions(message: types.Message):
