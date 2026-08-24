@@ -1,15 +1,17 @@
-import asyncio
 import os
+import asyncio
 import aiosqlite
 from datetime import datetime, timedelta
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8635601259:AAHHRqGDBenQEOh1cM8ajnhbepZIjjhJS-8")
-BOT_OWNER_ID = int(os.getenv("ADMIN_ID", "1112793157"))  # Bot yaratuvchisining Telegram ID'si
+# Render Environment Variables orqali olinadi
+BOT_TOKEN = os.getenv("8635601259:AAHHRqGDBenQEOh1cM8ajnhbepZIjjhJS-8")
+BOT_OWNER_ID = int(os.getenv("1112793157", "0"))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -26,7 +28,6 @@ class BroadcastState(StatesGroup):
 # --- BAZA BILAN ISHLASH ---
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
-        # Guruhlar sozlamalari
         await db.execute("""
             CREATE TABLE IF NOT EXISTS group_settings (
                 chat_id INTEGER PRIMARY KEY,
@@ -35,7 +36,6 @@ async def init_db():
                 channel TEXT DEFAULT ''
             )
         """)
-        # Guruhdagi foydalanuvchilar holati
         await db.execute("""
             CREATE TABLE IF NOT EXISTS group_users (
                 chat_id INTEGER,
@@ -45,7 +45,6 @@ async def init_db():
                 PRIMARY KEY (chat_id, user_id)
             )
         """)
-        # Barcha botga qo'shilgan guruhlarni saqlash (Statistika uchun)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS registered_groups (
                 chat_id INTEGER PRIMARY KEY
@@ -55,7 +54,6 @@ async def init_db():
 
 async def get_group_settings(chat_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
-        # Guruhni ro'yxatga olib qo'yish
         await db.execute("INSERT OR IGNORE INTO registered_groups (chat_id) VALUES (?)", (chat_id,))
         await db.commit()
 
@@ -94,11 +92,9 @@ async def check_channel_sub(user_id: int, channel: str) -> bool:
 @dp.message(Command("admin"), F.from_user.id == BOT_OWNER_ID)
 async def owner_panel(message: types.Message):
     async with aiosqlite.connect(DB_NAME) as db:
-        # Jami guruhlar soni
         async with db.execute("SELECT COUNT(*) FROM registered_groups") as cursor:
             groups_count = (await cursor.fetchone())[0]
         
-        # Jami unikal foydalanuvchilar soni
         async with db.execute("SELECT COUNT(DISTINCT user_id) FROM group_users") as cursor:
             users_count = (await cursor.fetchone())[0]
 
@@ -117,34 +113,32 @@ async def owner_panel(message: types.Message):
 
 @dp.callback_query(F.data == "start_broadcast", F.from_user.id == BOT_OWNER_ID)
 async def prompt_broadcast(call: types.CallbackQuery, state: FSMContext):
-    await call.message.answer("Отправьте сообщение для рассылки по всем группам (текст, фото или видео):")
+    await call.message.answer("Отправьте сообщение для рассылки по всем группам:")
     await state.set_state(BroadcastState.waiting_for_message)
     await call.answer()
 
 @dp.message(BroadcastState.waiting_for_message, F.from_user.id == BOT_OWNER_ID)
 async def process_broadcast(message: types.Message, state: FSMContext):
     await state.clear()
-    status_msg = await message.answer("🔄 Начинается рассылка по группам...")
+    status_msg = await message.answer("🔄 Начинается рассылка...")
 
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT chat_id FROM registered_groups") as cursor:
             groups = await cursor.fetchall()
 
     success, failed = 0, 0
-
     for group in groups:
-        chat_id = group[0]
         try:
-            await message.copy_to(chat_id=chat_id)
+            await message.copy_to(chat_id=group[0])
             success += 1
-            await asyncio.sleep(0.05)  # Telegram limitiga tushmaslik uchun kichik tanaffus
+            await asyncio.sleep(0.05)
         except Exception:
             failed += 1
 
     await status_msg.edit_text(
         f"✅ **Рассылка завершена!**\n\n"
-        f"• Успешно отправлено: **{success}** групп\n"
-        f"• Ошибок отправки: **{failed}**",
+        f"• Успешно: **{success}** групп\n"
+        f"• Ошибок: **{failed}**",
         parse_mode="Markdown"
     )
 
@@ -180,7 +174,7 @@ async def process_limit_btn(call: types.CallbackQuery, state: FSMContext):
     
     await state.update_data(target_chat_id=chat_id)
     await state.set_state(GroupSettingsState.waiting_for_limit)
-    await call.message.answer("Введите новое количество инвайтов (например: 5):")
+    await call.message.answer("Введите новое количество инвайтов:")
     await call.answer()
 
 @dp.message(GroupSettingsState.waiting_for_limit)
@@ -206,7 +200,7 @@ async def process_days_btn(call: types.CallbackQuery, state: FSMContext):
     
     await state.update_data(target_chat_id=chat_id)
     await state.set_state(GroupSettingsState.waiting_for_days)
-    await call.message.answer("Введите количество дней доступа (например: 7, 30):")
+    await call.message.answer("Введите количество дней доступа:")
     await call.answer()
 
 @dp.message(GroupSettingsState.waiting_for_days)
@@ -355,8 +349,23 @@ async def check_permissions(message: types.Message):
         await asyncio.sleep(5)
         await warning.delete()
 
+# --- RENDER PORT XATOSI OLISHNING OLDINI OLUVCHI DUMMY WEB SERVER ---
+async def handle(request):
+    return web.Response(text="Bot is running live on Render!")
+
 async def main():
     await init_db()
+
+    # Web-serverni ishga tushirish (Render talabi bo'yicha)
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    # Telegram bot polling
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
