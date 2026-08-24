@@ -450,8 +450,18 @@ async def track_invites(message: types.Message):
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def check_permissions(message: types.Message):
     chat_id = message.chat.id
+
+    # 1. Kanal nomidan yozilgan xabarlarni o'tkazib yuborish
+    if message.sender_chat:
+        return
+
+    # 2. Yashirin (Anonim) admin xabarlarini o'tkazib yuborish
+    if message.from_user and message.from_user.id == 1087968824:
+        return
+
     user_id = message.from_user.id
-    
+
+    # 3. Oddiy adminlarni tekshirish
     if await is_group_admin(bot, chat_id, user_id):
         return
 
