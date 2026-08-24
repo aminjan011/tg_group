@@ -10,7 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Loglarni sozlash (Xatolar yaqqol ko'rinishi uchun)
+# Loglarni sozlash
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -20,6 +20,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 DB_NAME = "bot_data.db"
 
+# --- FSM HOLATLARI ---
 class GroupSettingsState(StatesGroup):
     waiting_for_limit = State()
     waiting_for_days = State()
@@ -109,9 +110,10 @@ async def start_handler(message: types.Message, state: FSMContext):
         await message.reply("🤖 Bot guruhda faol! Sozlamalarni ko'rish uchun /panel buyrug'ini yuboring.")
         return
 
+    me = await bot.get_me()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="⚙️ Guruhlarni boshqarish", callback_data="my_groups")],
-        [types.InlineKeyboardButton(text="➕ Botni guruhga qo'shish", url=f"https://t.me/{(await bot.get_me()).username}?startgroup=true")]
+        [types.InlineKeyboardButton(text="➕ Botni guruhga qo'shish", url=f"https://t.me/{me.username}?startgroup=true")]
     ])
 
     if message.from_user.id == BOT_OWNER_ID:
@@ -137,15 +139,15 @@ async def owner_panel(event: types.Message | types.CallbackQuery):
             users_count = (await cursor.fetchone())[0]
 
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="📢 Рассылка по группам", callback_data="start_broadcast")],
+        [types.InlineKeyboardButton(text="📢 Guruhlarga xabar yuborish", callback_data="start_broadcast")],
         [types.InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="back_to_start")]
     ])
 
     text = (
-        f"👑 **Панель владельца бота**\n\n"
-        f"📊 **Статистика:**\n"
-        f"• Количество групп: **{groups_count}**\n"
-        f"• Уникальных пользователей: **{users_count}**"
+        f"👑 **Bosh Admin Paneli**\n\n"
+        f"📊 **Statistika:**\n"
+        f"• Guruhlar soni: **{groups_count}**\n"
+        f"• Unikal foydalanuvchilar: **{users_count}**"
     )
 
     if isinstance(event, types.CallbackQuery):
@@ -156,14 +158,14 @@ async def owner_panel(event: types.Message | types.CallbackQuery):
 
 @dp.callback_query(F.data == "start_broadcast", F.from_user.id == BOT_OWNER_ID)
 async def prompt_broadcast(call: types.CallbackQuery, state: FSMContext):
-    await call.message.answer("Отправьте сообщение для рассылки по всем группам:")
+    await call.message.answer("Barcha guruhlarga yuboriladigan xabarni kiriting:")
     await state.set_state(BroadcastState.waiting_for_message)
     await call.answer()
 
 @dp.message(BroadcastState.waiting_for_message, F.from_user.id == BOT_OWNER_ID)
 async def process_broadcast(message: types.Message, state: FSMContext):
     await state.clear()
-    status_msg = await message.answer("🔄 Начинается рассылка...")
+    status_msg = await message.answer("🔄 Xabar yuborilmoqda...")
 
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT chat_id FROM registered_groups") as cursor:
@@ -179,9 +181,9 @@ async def process_broadcast(message: types.Message, state: FSMContext):
             failed += 1
 
     await status_msg.edit_text(
-        f"✅ **Рассылка завершена!**\n\n"
-        f"• Успешно: **{success}** групп\n"
-        f"• Ошибок: **{failed}**",
+        f"✅ **Xabar yuborish yakunlandi!**\n\n"
+        f"• Muvaffaqiyatli: **{success}** ta guruh\n"
+        f"• Xatolik: **{failed}** ta",
         parse_mode="Markdown"
     )
 
@@ -190,9 +192,10 @@ async def process_broadcast(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "back_to_start")
 async def show_user_groups(call: types.CallbackQuery):
     if call.data == "back_to_start":
+        me = await bot.get_me()
         kb = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="⚙️ Guruhlarni boshqarish", callback_data="my_groups")],
-            [types.InlineKeyboardButton(text="➕ Botni guruhga qo'shish", url=f"https://t.me/{(await bot.get_me()).username}?startgroup=true")]
+            [types.InlineKeyboardButton(text="➕ Botni guruhga qo'shish", url=f"https://t.me/{me.username}?startgroup=true")]
         ])
         if call.from_user.id == BOT_OWNER_ID:
             kb.inline_keyboard.append([types.InlineKeyboardButton(text="👑 Bosh Admin Paneli", callback_data="owner_admin")])
@@ -351,8 +354,9 @@ async def open_group_panel_chat(message: types.Message):
         )
         await db.commit()
 
+    me = await bot.get_me()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="⚙️ Sozlamalarni shaxsiyda ochish", url=f"https://t.me/{(await bot.get_me()).username}?start=my_groups")]
+        [types.InlineKeyboardButton(text="⚙️ Sozlamalarni shaxsiyda ochish", url=f"https://t.me/{me.username}?start=my_groups")]
     ])
     await message.reply("⚙️ Guruhingizni sozlash uchun quyidagi tugma orqali botning shaxsiy chatiga o'ting:", reply_markup=kb)
 
@@ -458,26 +462,37 @@ async def check_permissions(message: types.Message):
         await asyncio.sleep(5)
         await warning.delete()
 
-# --- WEB SERVER & PARALLEL START ---
+# --- WEB SERVER VA PARALLEL ISHGA TUSHIRISH ---
 async def handle(request):
     return web.Response(text="Bot is active!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    app.router.add_head("/", handle)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info("Web server muvaffaqiyatli ishga tushdi.")
 
 async def main():
     await init_db()
     
-    # Webhook-ni tozalash (Conflict bo'lmasligi uchun)
+    # 1. Eski webhook va kutilayotgan barcha eski so'rovlarni to'liq tozalash
     await bot.delete_webhook(drop_pending_updates=True)
     
-    app = web.Application()
-    app.router.add_get("/", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    
-    # Pollingni ishga tushirish
-    await dp.start_polling(bot)
+    # 2. Web server hamda Polling-ni parallel holatda ishga tushirish
+    await asyncio.gather(
+        start_web_server(),
+        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot to'xtatildi.")
