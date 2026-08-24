@@ -468,8 +468,8 @@ async def handle(request):
 
 async def start_web_server():
     app = web.Application()
+    # Faqat GET yo'nalishi yetarli (aiohttp HEAD so'rovlarni o'zi boshqaradi)
     app.router.add_get("/", handle)
-    app.router.add_head("/", handle)
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -482,10 +482,10 @@ async def start_web_server():
 async def main():
     await init_db()
     
-    # 1. Eski webhook va kutilayotgan barcha eski so'rovlarni to'liq tozalash
+    # 1. Eski webhook va kutilayotgan barcha xabarlarni to'liq tozalash
     await bot.delete_webhook(drop_pending_updates=True)
     
-    # 2. Web server hamda Polling-ni parallel holatda ishga tushirish
+    # 2. Web server va Polling-ni parallel ishga tushirish
     await asyncio.gather(
         start_web_server(),
         dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
