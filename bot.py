@@ -25,6 +25,7 @@ class GroupSettingsState(StatesGroup):
     waiting_for_limit = State()
     waiting_for_days = State()
     waiting_for_channel = State()
+    waiting_for_delete_delay = State()
 
 class BroadcastState(StatesGroup):
     waiting_for_message = State()
@@ -37,7 +38,8 @@ async def init_db():
                 chat_id INTEGER PRIMARY KEY,
                 required_limit INTEGER DEFAULT 3,
                 duration_days INTEGER DEFAULT 7,
-                channel TEXT DEFAULT ''
+                channel TEXT DEFAULT '',
+                warning_delete_delay INTEGER DEFAULT 5
             )
         """)
         await db.execute("""
@@ -66,24 +68,28 @@ async def init_db():
             await db.execute("ALTER TABLE registered_groups ADD COLUMN added_by INTEGER DEFAULT 0")
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE group_settings ADD COLUMN warning_delete_delay INTEGER DEFAULT 5")
+        except Exception:
+            pass
         await db.commit()
 
 async def get_group_settings(chat_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute(
-            "SELECT required_limit, duration_days, channel FROM group_settings WHERE chat_id=?", 
+            "SELECT required_limit, duration_days, channel, warning_delete_delay FROM group_settings WHERE chat_id=?", 
             (chat_id,)
         ) as cursor:
             row = await cursor.fetchone()
             if row:
-                return {"limit": row[0], "days": row[1], "channel": row[2]}
+                return {"limit": row[0], "days": row[1], "channel": row[2], "delete_delay": row[3] if len(row) > 3 and row[3] is not None else 5}
             else:
                 await db.execute(
-                    "INSERT INTO group_settings (chat_id, required_limit, duration_days, channel) VALUES (?, 3, 7, '')",
+                    "INSERT INTO group_settings (chat_id, required_limit, duration_days, channel, warning_delete_delay) VALUES (?, 3, 7, '', 5)",
                     (chat_id,)
                 )
                 await db.commit()
-                return {"limit": 3, "days": 7, "channel": ""}
+                return {"limit": 3, "days": 7, "channel": "", "delete_delay": 5}
 
 async def is_group_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
     try:
@@ -249,6 +255,7 @@ async def manage_group_menu(call: types.CallbackQuery):
         [types.InlineKeyboardButton(text="👥 Изменить лимит инвайтов", callback_data=f"set_limit:{chat_id}")],
         [types.InlineKeyboardButton(text="⏳ Изменить срок доступа (дней)", callback_data=f"set_days:{chat_id}")],
         [types.InlineKeyboardButton(text="📢 Изменить обязательный канал", callback_data=f"set_chan:{chat_id}")],
+        [types.InlineKeyboardButton(text="⏱ Изменить время удаления предупреждений", callback_data=f"set_delay:{chat_id}")],
         [types.InlineKeyboardButton(text="⬅️ Вернуться к списку групп", callback_data="my_groups")]
     ])
 
@@ -256,7 +263,8 @@ async def manage_group_menu(call: types.CallbackQuery):
         f"⚙️ <b>Настройки группы</b>\n\n"
         f"• <b>Лимит добавления участников:</b> {settings['limit']} чел.\n"
         f"• <b>Срок разрешения на отправку сообщений:</b> {settings['days']} дней\n"
-        f"• <b>Обязательный канал:</b> {channel_display}",
+        f"• <b>Обязательный канал:</b> {channel_display}\n"
+        f"• <b>Удаление предупреждения через:</b> {settings['delete_delay']} сек.",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -333,6 +341,31 @@ async def save_chan(message: types.Message, state: FSMContext):
     await state.clear()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Вернуться к настройкам", callback_data=f"manage_g:{chat_id}")]])
     await message.answer(f"✅ Обязательный канал установлен: <b>{chan if chan else 'Отключен'}</b>!", reply_markup=kb, parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("set_delay:"))
+async def process_delay_btn(call: types.CallbackQuery, state: FSMContext):
+    chat_id = int(call.data.split(":")[1])
+    await state.update_data(target_chat_id=chat_id)
+    await state.set_state(GroupSettingsState.waiting_for_delete_delay)
+    await call.message.answer("✏️ <b>Через сколько секунд удалять предупреждения?</b> (Отправьте число в секундах, например: 5):", parse_mode="HTML")
+    await call.answer()
+
+@dp.message(GroupSettingsState.waiting_for_delete_delay)
+async def save_delay(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        return await message.answer("⚠️ Пожалуйста, введите только число!")
+    
+    data = await state.get_data()
+    chat_id = data.get("target_chat_id")
+    delay = int(message.text)
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE group_settings SET warning_delete_delay=? WHERE chat_id=?", (delay, chat_id))
+        await db.commit()
+        
+    await state.clear()
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Вернуться к настройкам", callback_data=f"manage_g:{chat_id}")]])
+    await message.answer(f"✅ Время удаления предупреждений установлено на <b>{delay} сек.</b>!", reply_markup=kb, parse_mode="HTML")
 
 # --- СОБЫТИЯ В ГРУППЕ ---
 @dp.my_chat_member()
@@ -425,7 +458,7 @@ async def check_permissions(message: types.Message):
         warning = await message.answer(
             f"⚠️ <b>{user_name}</b>, чтобы писать в группу, сначала подпишитесь на обязательный канал!", reply_markup=kb, parse_mode="HTML"
         )
-        await asyncio.sleep(5)
+        await asyncio.sleep(settings['delete_delay'])
         await warning.delete()
         return
 
@@ -465,7 +498,7 @@ async def check_permissions(message: types.Message):
             f"⚠️ <b>{user_name}</b>, чтобы писать в чат, вам нужно добавить еще <b>{remaining}</b> чел.! (Доступ дается на {settings['days']} дней)",
             parse_mode="HTML"
         )
-        await asyncio.sleep(5)
+        await asyncio.sleep(settings['delete_delay'])
         await warning.delete()
 
 # --- ВЕБ-СЕРВЕР И ПАРАЛЛЕЛЬНЫЙ ЗАПУСК ---
