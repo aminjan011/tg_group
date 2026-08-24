@@ -1,5 +1,6 @@
 import os
 import asyncio
+import logging
 import aiosqlite
 from datetime import datetime, timedelta
 from aiohttp import web
@@ -8,6 +9,9 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+
+# Loglarni sozlash (Xatolar yaqqol ko'rinishi uchun)
+logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_OWNER_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -24,7 +28,7 @@ class GroupSettingsState(StatesGroup):
 class BroadcastState(StatesGroup):
     waiting_for_message = State()
 
-# --- BAZANI MIGRATSIYA BILAN YARATISH ---
+# --- BAZA BILAN ISHLASH ---
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
@@ -53,7 +57,6 @@ async def init_db():
         """)
         await db.commit()
 
-        # Eskirgan bazalarni avtomatik yangilash (Migratsiya)
         try:
             await db.execute("ALTER TABLE registered_groups ADD COLUMN title TEXT DEFAULT ''")
         except Exception:
@@ -324,7 +327,7 @@ async def save_chan(message: types.Message, state: FSMContext):
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Sozlamalarga qaytish", callback_data=f"manage_g:{chat_id}")]])
     await message.answer(f"✅ Majburiy kanal **{chan if chan else 'O-chirilgan'}** qilindi!", reply_markup=kb, parse_mode="Markdown")
 
-# --- GURUH VA HODISALAR ---
+# --- GURUH HODISALARI ---
 @dp.my_chat_member()
 async def bot_added_to_group(event: types.ChatMemberUpdated):
     if event.chat.type in ["group", "supergroup"] and event.new_chat_member.status in ["administrator", "member"]:
@@ -455,11 +458,16 @@ async def check_permissions(message: types.Message):
         await asyncio.sleep(5)
         await warning.delete()
 
-# --- WEB SERVER & START ---
+# --- WEB SERVER & PARALLEL START ---
 async def handle(request):
-    return web.Response(text="Bot is running active!")
+    return web.Response(text="Bot is active!")
 
-async def start_web_server():
+async def main():
+    await init_db()
+    
+    # Webhook-ni tozalash (Conflict bo'lmasligi uchun)
+    await bot.delete_webhook(drop_pending_updates=True)
+    
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
@@ -467,10 +475,8 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-
-async def main():
-    await init_db()
-    await start_web_server()
+    
+    # Pollingni ishga tushirish
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
