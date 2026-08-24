@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Render Environment Variables orqali olinadi
+# Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_OWNER_ID = int(os.getenv("ADMIN_ID", "0"))
 
@@ -88,7 +88,7 @@ async def check_channel_sub(user_id: int, channel: str) -> bool:
     except Exception:
         return False
 
-# --- BOSH ADMIN (BOT YARATUVCHISI) PANELI (`/admin`) ---
+# --- BOSH ADMIN PANELI (`/admin`) ---
 @dp.message(Command("admin"), F.from_user.id == BOT_OWNER_ID)
 async def owner_panel(message: types.Message):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -142,7 +142,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
         parse_mode="Markdown"
     )
 
-# --- GURUH ADMINLARI UCHUN PANEL (`/panel`) ---
+# --- GURUH ADMINLARI PANELI (`/panel`) ---
 @dp.message(Command("panel"), F.chat.type.in_({"group", "supergroup"}))
 async def open_group_panel(message: types.Message):
     if not await is_group_admin(bot, message.chat.id, message.from_user.id):
@@ -244,7 +244,7 @@ async def save_chan(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(f"✅ Обязательный канал сохранен: **{chan if chan else 'Отключен'}**", parse_mode="Markdown")
 
-# --- GURUHDAGI ASOSIY TEKSHIRUV MANTIG'I ---
+# --- GURUHDAGI MANTIQ ---
 @dp.message(F.new_chat_members)
 async def track_invites(message: types.Message):
     chat_id = message.chat.id
@@ -291,7 +291,6 @@ async def check_permissions(message: types.Message):
     settings = await get_group_settings(chat_id)
     now = datetime.now()
 
-    # 1. Kanalga obunani tekshirish
     if not await check_channel_sub(user_id, settings['channel']):
         try:
             await message.delete()
@@ -309,7 +308,6 @@ async def check_permissions(message: types.Message):
         await warning.delete()
         return
 
-    # 2. Odam qo'shish va muddatni tekshirish
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute(
             "SELECT invites_count, expires_at FROM group_users WHERE chat_id=? AND user_id=?", 
@@ -349,14 +347,11 @@ async def check_permissions(message: types.Message):
         await asyncio.sleep(5)
         await warning.delete()
 
-# --- RENDER PORT XATOSI OLISHNING OLDINI OLUVCHI DUMMY WEB SERVER ---
+# --- RENDER PING DUMMY SERVER ---
 async def handle(request):
-    return web.Response(text="Bot is running live on Render!")
+    return web.Response(text="Bot is running!")
 
-async def main():
-    await init_db()
-
-    # Web-serverni ishga tushirish (Render talabi bo'yicha)
+async def start_web_server():
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
@@ -365,7 +360,9 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    # Telegram bot polling
+async def main():
+    await init_db()
+    await start_web_server()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
