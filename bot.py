@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-import aiosqlite
+import asyncpg
 from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
@@ -15,10 +15,11 @@ logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_OWNER_ID = int(os.getenv("ADMIN_ID", "0"))
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-DB_NAME = "bot_data.db"
+db_pool = None
 
 # --- СОСТОЯНИЯ FSM ---
 class GroupSettingsState(StatesGroup):
@@ -30,66 +31,53 @@ class GroupSettingsState(StatesGroup):
 class BroadcastState(StatesGroup):
     waiting_for_message = State()
 
-# --- РАБОТА С БАЗОЙ ДАННЫХ ---
+# --- РАБОТА С БАЗОЙ ДАННЫХ (POSTGRESQL) ---
 async def init_db():
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS group_settings (
-                chat_id INTEGER PRIMARY KEY,
-                required_limit INTEGER DEFAULT 3,
-                duration_days INTEGER DEFAULT 7,
-                channel TEXT DEFAULT '',
-                warning_delete_delay INTEGER DEFAULT 5
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS group_users (
-                chat_id INTEGER,
-                user_id INTEGER,
-                invites_count INTEGER DEFAULT 0,
-                expires_at TEXT,
-                PRIMARY KEY (chat_id, user_id)
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS registered_groups (
-                chat_id INTEGER PRIMARY KEY,
-                title TEXT DEFAULT '',
-                added_by INTEGER DEFAULT 0
-            )
-        """)
-        await db.commit()
+    global db_pool
+    # Render Internal URL 'postgres://' bilan boshlansa 'postgresql://' ga o'tkazamiz
+    db_url = DATABASE_URL
+    if db_url and db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
 
-        try:
-            await db.execute("ALTER TABLE registered_groups ADD COLUMN title TEXT DEFAULT ''")
-        except Exception:
-            pass
-        try:
-            await db.execute("ALTER TABLE registered_groups ADD COLUMN added_by INTEGER DEFAULT 0")
-        except Exception:
-            pass
-        try:
-            await db.execute("ALTER TABLE group_settings ADD COLUMN warning_delete_delay INTEGER DEFAULT 5")
-        except Exception:
-            pass
-        await db.commit()
+    db_pool = await asyncpg.create_pool(dsn=db_url)
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS group_settings (
+                chat_id BIGINT PRIMARY KEY,
+                required_limit INT DEFAULT 3,
+                duration_days INT DEFAULT 7,
+                channel TEXT DEFAULT '',
+                warning_delete_delay INT DEFAULT 5
+            );
+            CREATE TABLE IF NOT EXISTS group_users (
+                chat_id BIGINT,
+                user_id BIGINT,
+                invites_count INT DEFAULT 0,
+                expires_at TIMESTAMP,
+                PRIMARY KEY (chat_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS registered_groups (
+                chat_id BIGINT PRIMARY KEY,
+                title TEXT DEFAULT '',
+                added_by BIGINT DEFAULT 0
+            );
+        """)
 
 async def get_group_settings(chat_id: int):
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute(
-            "SELECT required_limit, duration_days, channel, warning_delete_delay FROM group_settings WHERE chat_id=?", 
-            (chat_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                return {"limit": row[0], "days": row[1], "channel": row[2], "delete_delay": row[3] if len(row) > 3 and row[3] is not None else 5}
-            else:
-                await db.execute(
-                    "INSERT INTO group_settings (chat_id, required_limit, duration_days, channel, warning_delete_delay) VALUES (?, 3, 7, '', 5)",
-                    (chat_id,)
-                )
-                await db.commit()
-                return {"limit": 3, "days": 7, "channel": "", "delete_delay": 5}
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT required_limit, duration_days, channel, warning_delete_delay FROM group_settings WHERE chat_id=$1", 
+            chat_id
+        )
+        if row:
+            return {"limit": row['required_limit'], "days": row['duration_days'], "channel": row['channel'], "delete_delay": row['warning_delete_delay']}
+        else:
+            await conn.execute(
+                "INSERT INTO group_settings (chat_id, required_limit, duration_days, channel, warning_delete_delay) VALUES ($1, 3, 7, '', 5)",
+                chat_id
+            )
+            return {"limit": 3, "days": 7, "channel": "", "delete_delay": 5}
 
 async def is_group_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
     try:
@@ -139,12 +127,9 @@ async def start_handler(message: types.Message, state: FSMContext):
 @dp.message(Command("admin"), F.from_user.id == BOT_OWNER_ID)
 @dp.callback_query(F.data == "owner_admin", F.from_user.id == BOT_OWNER_ID)
 async def owner_panel(event: types.Message | types.CallbackQuery):
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT COUNT(*) FROM registered_groups") as cursor:
-            groups_count = (await cursor.fetchone())[0]
-        
-        async with db.execute("SELECT COUNT(DISTINCT user_id) FROM group_users") as cursor:
-            users_count = (await cursor.fetchone())[0]
+    async with db_pool.acquire() as conn:
+        groups_count = await conn.fetchval("SELECT COUNT(*) FROM registered_groups")
+        users_count = await conn.fetchval("SELECT COUNT(DISTINCT user_id) FROM group_users")
 
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="📢 Рассылка по группам", callback_data="start_broadcast")],
@@ -175,14 +160,13 @@ async def process_broadcast(message: types.Message, state: FSMContext):
     await state.clear()
     status_msg = await message.answer("🔄 Идет отправка сообщений...")
 
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT chat_id FROM registered_groups") as cursor:
-            groups = await cursor.fetchall()
+    async with db_pool.acquire() as conn:
+        groups = await conn.fetch("SELECT chat_id FROM registered_groups")
 
     success, failed = 0, 0
     for group in groups:
         try:
-            await message.copy_to(chat_id=group[0])
+            await message.copy_to(chat_id=group['chat_id'])
             success += 1
             await asyncio.sleep(0.05)
         except Exception:
@@ -220,14 +204,13 @@ async def show_user_groups(call: types.CallbackQuery):
         await call.answer()
         return
 
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT chat_id, title FROM registered_groups WHERE added_by=?", (call.from_user.id,)) as cursor:
-            groups = await cursor.fetchall()
+    async with db_pool.acquire() as conn:
+        groups = await conn.fetch("SELECT chat_id, title FROM registered_groups WHERE added_by=$1", call.from_user.id)
 
     buttons = []
-    for g_id, g_title in groups:
-        name = g_title if g_title else f"Группа ({g_id})"
-        buttons.append([types.InlineKeyboardButton(text=f"👥 {name}", callback_data=f"manage_g:{g_id}")])
+    for g in groups:
+        name = g['title'] if g['title'] else f"Группа ({g['chat_id']})"
+        buttons.append([types.InlineKeyboardButton(text=f"👥 {name}", callback_data=f"manage_g:{g['chat_id']}")])
 
     buttons.append([types.InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_start")])
     kb = types.InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -286,9 +269,8 @@ async def save_limit(message: types.Message, state: FSMContext):
     data = await state.get_data()
     chat_id = data.get("target_chat_id")
     
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("UPDATE group_settings SET required_limit=? WHERE chat_id=?", (int(message.text), chat_id))
-        await db.commit()
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE group_settings SET required_limit=$1 WHERE chat_id=$2", int(message.text), chat_id)
         
     await state.clear()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Вернуться к настройкам", callback_data=f"manage_g:{chat_id}")]])
@@ -310,9 +292,8 @@ async def save_days(message: types.Message, state: FSMContext):
     data = await state.get_data()
     chat_id = data.get("target_chat_id")
     
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("UPDATE group_settings SET duration_days=? WHERE chat_id=?", (int(message.text), chat_id))
-        await db.commit()
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE group_settings SET duration_days=$1 WHERE chat_id=$2", int(message.text), chat_id)
         
     await state.clear()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Вернуться к настройкам", callback_data=f"manage_g:{chat_id}")]])
@@ -334,9 +315,8 @@ async def save_chan(message: types.Message, state: FSMContext):
     if chan == "0":
         chan = ""
         
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("UPDATE group_settings SET channel=? WHERE chat_id=?", (chan, chat_id))
-        await db.commit()
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE group_settings SET channel=$1 WHERE chat_id=$2", chan, chat_id)
         
     await state.clear()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Вернуться к настройкам", callback_data=f"manage_g:{chat_id}")]])
@@ -359,9 +339,8 @@ async def save_delay(message: types.Message, state: FSMContext):
     chat_id = data.get("target_chat_id")
     delay = int(message.text)
     
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("UPDATE group_settings SET warning_delete_delay=? WHERE chat_id=?", (delay, chat_id))
-        await db.commit()
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE group_settings SET warning_delete_delay=$1 WHERE chat_id=$2", delay, chat_id)
         
     await state.clear()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Вернуться к настройкам", callback_data=f"manage_g:{chat_id}")]])
@@ -371,12 +350,11 @@ async def save_delay(message: types.Message, state: FSMContext):
 @dp.my_chat_member()
 async def bot_added_to_group(event: types.ChatMemberUpdated):
     if event.chat.type in ["group", "supergroup"] and event.new_chat_member.status in ["administrator", "member"]:
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO registered_groups (chat_id, title, added_by) VALUES (?, ?, ?)",
-                (event.chat.id, event.chat.title, event.from_user.id)
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO registered_groups (chat_id, title, added_by) VALUES ($1, $2, $3) ON CONFLICT (chat_id) DO UPDATE SET title=$2, added_by=$3",
+                event.chat.id, event.chat.title, event.from_user.id
             )
-            await db.commit()
         await get_group_settings(event.chat.id)
 
 @dp.message(Command("panel"), F.chat.type.in_({"group", "supergroup"}))
@@ -384,12 +362,11 @@ async def open_group_panel_chat(message: types.Message):
     if not await is_group_admin(bot, message.chat.id, message.from_user.id):
         return await message.reply("⚠️ Эта команда доступна только администраторам группы!")
 
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO registered_groups (chat_id, title, added_by) VALUES (?, ?, ?)",
-            (message.chat.id, message.chat.title, message.from_user.id)
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO registered_groups (chat_id, title, added_by) VALUES ($1, $2, $3) ON CONFLICT (chat_id) DO UPDATE SET title=$2, added_by=$3",
+            message.chat.id, message.chat.title, message.from_user.id
         )
-        await db.commit()
 
     me = await bot.get_me()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -413,21 +390,19 @@ async def track_invites(message: types.Message):
     
     for member in message.new_chat_members:
         if member.id != inviter.id:
-            async with aiosqlite.connect(DB_NAME) as db:
-                async with db.execute(
-                    "SELECT invites_count FROM group_users WHERE chat_id=? AND user_id=?", 
-                    (chat_id, inviter.id)
-                ) as cursor:
-                    row = await cursor.fetchone()
-                    current_count = row[0] if row else 0
-                
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT invites_count FROM group_users WHERE chat_id=$1 AND user_id=$2", 
+                    chat_id, inviter.id
+                )
+                current_count = row['invites_count'] if row else 0
                 new_count = current_count + 1
                 
                 if new_count >= settings['limit']:
-                    expires_at = (datetime.now() + timedelta(days=settings['days'])).isoformat()
-                    await db.execute(
-                        "INSERT OR REPLACE INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES (?, ?, 0, ?)",
-                        (chat_id, inviter.id, expires_at)
+                    expires_at = datetime.now() + timedelta(days=settings['days'])
+                    await conn.execute(
+                        "INSERT INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES ($1, $2, 0, $3) ON CONFLICT (chat_id, user_id) DO UPDATE SET invites_count=0, expires_at=$3",
+                        chat_id, inviter.id, expires_at
                     )
                     user_name = inviter.full_name.replace("<", "&lt;").replace(">", "&gt;")
                     await message.answer(
@@ -435,13 +410,11 @@ async def track_invites(message: types.Message):
                         parse_mode="HTML"
                     )
                 else:
-                    await db.execute(
-                        "INSERT OR REPLACE INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES (?, ?, ?, NULL)",
-                        (chat_id, inviter.id, new_count)
+                    await conn.execute(
+                        "INSERT INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES ($1, $2, $3, NULL) ON CONFLICT (chat_id, user_id) DO UPDATE SET invites_count=$3, expires_at=NULL",
+                        chat_id, inviter.id, new_count
                     )
-                await db.commit()
 
-    # Yangi a'zo qo'shilganligi haqidagi Telegram xabarini o'chirish
     try:
         await message.delete()
     except Exception:
@@ -486,29 +459,27 @@ async def check_permissions(message: types.Message):
         await warning.delete()
         return
 
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute(
-            "SELECT invites_count, expires_at FROM group_users WHERE chat_id=? AND user_id=?", 
-            (chat_id, user_id)
-        ) as cursor:
-            row = await cursor.fetchone()
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT invites_count, expires_at FROM group_users WHERE chat_id=$1 AND user_id=$2", 
+            chat_id, user_id
+        )
 
     can_write = False
     invites_count = 0
 
     if row:
-        invites_count, expires_at_str = row
-        if expires_at_str:
-            expires_at = datetime.fromisoformat(expires_at_str)
+        invites_count = row['invites_count']
+        expires_at = row['expires_at']
+        if expires_at:
             if now < expires_at:
                 can_write = True
             else:
-                async with aiosqlite.connect(DB_NAME) as db:
-                    await db.execute(
-                        "UPDATE group_users SET expires_at=NULL, invites_count=0 WHERE chat_id=? AND user_id=?", 
-                        (chat_id, user_id)
+                async with db_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE group_users SET expires_at=NULL, invites_count=0 WHERE chat_id=$1 AND user_id=$2", 
+                        chat_id, user_id
                     )
-                    await db.commit()
                 can_write = False
 
     if not can_write:
