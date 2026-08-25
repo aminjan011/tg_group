@@ -34,7 +34,6 @@ class BroadcastState(StatesGroup):
 # --- РАБОТА С БАЗОЙ ДАННЫХ (POSTGRESQL) ---
 async def init_db():
     global db_pool
-    # Render Internal URL 'postgres://' bilan boshlansa 'postgresql://' ga o'tkazamiz
     db_url = DATABASE_URL
     if db_url and db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
@@ -399,10 +398,10 @@ async def track_invites(message: types.Message):
                 new_count = current_count + 1
                 
                 if new_count >= settings['limit']:
-                    expires_at = datetime.now() + timedelta(days=settings['days'])
+                    expires_at = datetime.utcnow() + timedelta(days=settings['days'])
                     await conn.execute(
-                        "INSERT INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES ($1, $2, 0, $3) ON CONFLICT (chat_id, user_id) DO UPDATE SET invites_count=0, expires_at=$3",
-                        chat_id, inviter.id, expires_at
+                        "INSERT INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES ($1, $2, $3, $4) ON CONFLICT (chat_id, user_id) DO UPDATE SET invites_count=$3, expires_at=$4",
+                        chat_id, inviter.id, new_count, expires_at
                     )
                     user_name = inviter.full_name.replace("<", "&lt;").replace(">", "&gt;")
                     await message.answer(
@@ -411,7 +410,7 @@ async def track_invites(message: types.Message):
                     )
                 else:
                     await conn.execute(
-                        "INSERT INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES ($1, $2, $3, NULL) ON CONFLICT (chat_id, user_id) DO UPDATE SET invites_count=$3, expires_at=NULL",
+                        "INSERT INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES ($1, $2, $3, NULL) ON CONFLICT (chat_id, user_id) DO UPDATE SET invites_count=$3",
                         chat_id, inviter.id, new_count
                     )
 
@@ -439,9 +438,10 @@ async def check_permissions(message: types.Message):
         return
 
     settings = await get_group_settings(chat_id)
-    now = datetime.now()
+    now = datetime.utcnow()
     user_name = message.from_user.full_name.replace("<", "&lt;").replace(">", "&gt;")
 
+    # 4. Kanalga obunani tekshirish
     if not await check_channel_sub(user_id, settings['channel']):
         try:
             await message.delete()
@@ -459,6 +459,7 @@ async def check_permissions(message: types.Message):
         await warning.delete()
         return
 
+    # 5. Odam qo'shganlik holatini tekshirish
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT invites_count, expires_at FROM group_users WHERE chat_id=$1 AND user_id=$2", 
@@ -469,9 +470,14 @@ async def check_permissions(message: types.Message):
     invites_count = 0
 
     if row:
-        invites_count = row['invites_count']
+        invites_count = row['invites_count'] or 0
         expires_at = row['expires_at']
-        if expires_at:
+        
+        if invites_count >= settings['limit']:
+            can_write = True
+        elif expires_at:
+            if expires_at.tzinfo is not None:
+                expires_at = expires_at.replace(tzinfo=None)
             if now < expires_at:
                 can_write = True
             else:
@@ -488,7 +494,7 @@ async def check_permissions(message: types.Message):
         except Exception:
             pass
             
-        remaining = settings['limit'] - invites_count
+        remaining = max(0, settings['limit'] - invites_count)
         warning = await message.answer(
             f"⚠️ <b>{user_name}</b>, чтобы писать в чат, вам нужно добавить еще <b>{remaining}</b> чел.! (Доступ дается на {settings['days']} дней)",
             parse_mode="HTML"
