@@ -10,7 +10,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Loglarni sozlash
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -31,7 +30,7 @@ class GroupSettingsState(StatesGroup):
 class BroadcastState(StatesGroup):
     waiting_for_message = State()
 
-# --- POSTGRESQL BAZASI BILAN ISHLASH ---
+# --- BAZA BILAN ISHLASH ---
 async def init_db():
     global db_pool
     db_url = DATABASE_URL
@@ -79,8 +78,7 @@ async def get_group_settings(chat_id: int):
             return {"limit": 3, "days": 7, "channel": "", "delete_delay": 5}
 
 async def is_group_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
-    # Anonim admin ID si bo'lsa darhol True qaytariladi
-    if user_id == 1087968824:
+    if not user_id or user_id == 1087968824:  # GroupAnonymousBot ID
         return True
     try:
         member = await bot.get_chat_member(chat_id, user_id)
@@ -89,7 +87,7 @@ async def is_group_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
         return False
 
 async def check_channel_sub(user_id: int, channel: str) -> bool:
-    if not channel:
+    if not channel or not user_id:
         return True
     try:
         member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
@@ -97,7 +95,7 @@ async def check_channel_sub(user_id: int, channel: str) -> bool:
     except Exception:
         return False
 
-# --- `/start` BUYRUG'I ---
+# --- BUYRUQLAR VA PANELLAR ---
 @dp.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext):
     await state.clear()
@@ -112,10 +110,10 @@ async def start_handler(message: types.Message, state: FSMContext):
         [types.InlineKeyboardButton(text="➕ Добавить бота в группу", url=f"https://t.me/{me.username}?startgroup=true")]
     ])
 
-    if message.from_user.id == BOT_OWNER_ID:
+    if message.from_user and message.from_user.id == BOT_OWNER_ID:
         kb.inline_keyboard.append([types.InlineKeyboardButton(text="👑 Панель главного админа", callback_data="owner_admin")])
 
-    user_name = message.from_user.full_name.replace("<", "&lt;").replace(">", "&gt;")
+    user_name = message.from_user.full_name.replace("<", "&lt;").replace(">", "&gt;") if message.from_user else "Пользователь"
 
     await message.reply(
         f"👋 <b>Добро пожаловать, {user_name}!</b>\n\n"
@@ -125,7 +123,6 @@ async def start_handler(message: types.Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# --- ASOSIY ADMIN PANEL ---
 @dp.message(Command("admin"), F.from_user.id == BOT_OWNER_ID)
 @dp.callback_query(F.data == "owner_admin", F.from_user.id == BOT_OWNER_ID)
 async def owner_panel(event: types.Message | types.CallbackQuery):
@@ -181,7 +178,6 @@ async def process_broadcast(message: types.Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# --- FOYDALANUVCHI GURUHLARI MENUSI ---
 @dp.callback_query(F.data == "my_groups")
 @dp.callback_query(F.data == "back_to_start")
 async def show_user_groups(call: types.CallbackQuery):
@@ -228,7 +224,6 @@ async def show_user_groups(call: types.CallbackQuery):
         await call.message.edit_text("📋 <b>Выберите группу для настройки:</b>", reply_markup=kb, parse_mode="HTML")
     await call.answer()
 
-# --- GURUH SOZLAMALARI ---
 @dp.callback_query(F.data.startswith("manage_g:"))
 async def manage_group_menu(call: types.CallbackQuery):
     chat_id = int(call.data.split(":")[1])
@@ -348,7 +343,7 @@ async def save_delay(message: types.Message, state: FSMContext):
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Вернуться к настройкам", callback_data=f"manage_g:{chat_id}")]])
     await message.answer(f"✅ Время удаления предупреждений установлено на <b>{delay} сек.</b>!", reply_markup=kb, parse_mode="HTML")
 
-# --- GURUH VOQEALARI VA BIRIKTIRISH ---
+# --- GURUH HODISALARI ---
 @dp.my_chat_member()
 async def bot_added_to_group(event: types.ChatMemberUpdated):
     if event.chat.type in ["group", "supergroup"]:
@@ -363,14 +358,16 @@ async def bot_added_to_group(event: types.ChatMemberUpdated):
 
 @dp.message(Command("panel"), F.chat.type.in_({"group", "supergroup"}))
 async def open_group_panel_chat(message: types.Message):
-    user_id = message.from_user.id
-    if not await is_group_admin(bot, message.chat.id, user_id):
+    user_id = message.from_user.id if message.from_user else None
+    
+    # Yashirin adminlar uchun tekshiruv
+    if not message.sender_chat and user_id and not await is_group_admin(bot, message.chat.id, user_id):
         return await message.reply("⚠️ Эта команда доступна только администраторам группы!")
 
     async with db_pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO registered_groups (chat_id, title, added_by) VALUES ($1, $2, $3) ON CONFLICT (chat_id) DO UPDATE SET title=$2, added_by=$3",
-            message.chat.id, message.chat.title, user_id
+            message.chat.id, message.chat.title, user_id or 0
         )
     await get_group_settings(message.chat.id)
 
@@ -391,10 +388,15 @@ async def delete_left_chat_member_message(message: types.Message):
     except Exception:
         pass
 
+# --- ODAM QO'SHILGANIDA TEKSHIRISH VA BAZAGA YOZISH ---
 @dp.message(F.new_chat_members)
 async def track_invites(message: types.Message):
     chat_id = message.chat.id
     inviter = message.from_user
+    
+    if not inviter:
+        return
+        
     settings = await get_group_settings(chat_id)
     
     for member in message.new_chat_members:
@@ -414,7 +416,7 @@ async def track_invites(message: types.Message):
                         chat_id, inviter.id, new_count, expires_at
                     )
                     user_name = inviter.full_name.replace("<", "&lt;").replace(">", "&gt;")
-                    msg = await message.answer(
+                    await message.answer(
                         f"🎉 {user_name}, вы выполнили условие ({settings['limit']} чел.)! Доступ предоставлен на <b>{settings['days']} дней</b>.",
                         parse_mode="HTML"
                     )
@@ -429,24 +431,28 @@ async def track_invites(message: types.Message):
     except Exception:
         pass
 
+# --- XABARLARNI TEKSHIRISH VA FILTRLASH ---
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def check_permissions(message: types.Message):
     chat_id = message.chat.id
 
-    # Kanal nomidan kelgan xabarlar
-    if message.sender_chat:
+    # 1. YASHIRIN ADMINLAR VA KANAL NOMIDAN YOZILGAN XABARLARNI DARHOL O'TKAZISH
+    if message.sender_chat or (message.from_user and message.from_user.id == 1087968824):
         return
 
-    # Anonim adminlar yoki oddiy adminlar
-    if message.from_user and await is_group_admin(bot, chat_id, message.from_user.id):
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
         return
 
-    user_id = message.from_user.id
+    # 2. ODDIY ADMINLARNI TEKSHIRISH
+    if await is_group_admin(bot, chat_id, user_id):
+        return
+
     settings = await get_group_settings(chat_id)
     now = datetime.now(timezone.utc)
     user_name = message.from_user.full_name.replace("<", "&lt;").replace(">", "&gt;")
 
-    # Kanal obunasini tekshirish
+    # 3. KANAL OBUNASINI TEKSHIRISH
     if not await check_channel_sub(user_id, settings['channel']):
         try:
             await message.delete()
@@ -467,7 +473,7 @@ async def check_permissions(message: types.Message):
             pass
         return
 
-    # Odam qo'shganlik holatini tekshirish
+    # 4. ODAM QO'SHGANLIK VA MUDDATNI TEKSHIRISH
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT invites_count, expires_at FROM group_users WHERE chat_id=$1 AND user_id=$2", 
@@ -481,21 +487,16 @@ async def check_permissions(message: types.Message):
         invites_count = row['invites_count'] or 0
         expires_at = row['expires_at']
         
-        if expires_at is not None:
+        # Sanoq chekloviga yetgan bo'lsa
+        if invites_count >= settings['limit']:
+            can_write = True
+        # Yoki hali muddati tugamagan bo'lsa
+        elif expires_at is not None:
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
             
             if now < expires_at:
                 can_write = True
-            else:
-                async with db_pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE group_users SET expires_at=NULL, invites_count=0 WHERE chat_id=$1 AND user_id=$2", 
-                        chat_id, user_id
-                    )
-                can_write = False
-        elif invites_count >= settings['limit']:
-            can_write = True
 
     if not can_write:
         try:
@@ -514,7 +515,7 @@ async def check_permissions(message: types.Message):
         except Exception:
             pass
 
-# --- VEB-SERVER VA ISHGA TUSHIRISH ---
+# --- VEB SERVER VA ISHGA TUSHIRISH ---
 async def handle(request):
     return web.Response(text="Bot is active!")
 
