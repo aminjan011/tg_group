@@ -21,7 +21,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 db_pool = None
 
-# --- СОСТОЯНИЯ FSM ---
+# --- FSM HOLATLARI ---
 class GroupSettingsState(StatesGroup):
     waiting_for_limit = State()
     waiting_for_days = State()
@@ -31,7 +31,7 @@ class GroupSettingsState(StatesGroup):
 class BroadcastState(StatesGroup):
     waiting_for_message = State()
 
-# --- РАБОТА С БАЗОЙ ДАННЫХ (POSTGRESQL) ---
+# --- POSTGRESQL BAZASI BILAN ISHLASH ---
 async def init_db():
     global db_pool
     db_url = DATABASE_URL
@@ -94,7 +94,7 @@ async def check_channel_sub(user_id: int, channel: str) -> bool:
     except Exception:
         return False
 
-# --- ХЕНДЛЕР `/start` ---
+# --- `/start` BUYRUG'I ---
 @dp.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext):
     await state.clear()
@@ -122,7 +122,7 @@ async def start_handler(message: types.Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# --- ПАНЕЛЬ ГЛАВНОГО АДМИНА ---
+# --- ASOSIY ADMIN PANEL ---
 @dp.message(Command("admin"), F.from_user.id == BOT_OWNER_ID)
 @dp.callback_query(F.data == "owner_admin", F.from_user.id == BOT_OWNER_ID)
 async def owner_panel(event: types.Message | types.CallbackQuery):
@@ -178,7 +178,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# --- МЕНЮ ГРУПП ПОЛЬЗОВАТЕЛЯ ---
+# --- FOYDALANUVCHI GURUHLARI MENUSI ---
 @dp.callback_query(F.data == "my_groups")
 @dp.callback_query(F.data == "back_to_start")
 async def show_user_groups(call: types.CallbackQuery):
@@ -217,7 +217,7 @@ async def show_user_groups(call: types.CallbackQuery):
     if not groups:
         await call.message.edit_text(
             "❌ <b>Вы еще не подключили бота ни к одной группе!</b>\n\n"
-            "Добавьте бота в группу, выдайте права администратора или отправьте <code>/panel</code> в группе, чтобы она появилась здесь.",
+            "Добавьте бота в группу и выдайте права администратора, или отправьте команду <code>/panel</code> прямо в вашей группе.",
             reply_markup=kb,
             parse_mode="HTML"
         )
@@ -225,7 +225,7 @@ async def show_user_groups(call: types.CallbackQuery):
         await call.message.edit_text("📋 <b>Выберите группу для настройки:</b>", reply_markup=kb, parse_mode="HTML")
     await call.answer()
 
-# --- НАСТРОЙКИ ГРУППЫ ---
+# --- GURUH SOZLAMALARI ---
 @dp.callback_query(F.data.startswith("manage_g:"))
 async def manage_group_menu(call: types.CallbackQuery):
     chat_id = int(call.data.split(":")[1])
@@ -345,35 +345,42 @@ async def save_delay(message: types.Message, state: FSMContext):
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⚙️ Вернуться к настройкам", callback_data=f"manage_g:{chat_id}")]])
     await message.answer(f"✅ Время удаления предупреждений установлено на <b>{delay} сек.</b>!", reply_markup=kb, parse_mode="HTML")
 
-# --- СОБЫТИЯ В ГРУППЕ ---
+# --- GURUH VOQEALARI VA BIRIKTIRISH ---
 @dp.my_chat_member()
 async def bot_added_to_group(event: types.ChatMemberUpdated):
-    if event.chat.type in ["group", "supergroup"] and event.new_chat_member.status in ["administrator", "member"]:
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO registered_groups (chat_id, title, added_by) VALUES ($1, $2, $3) ON CONFLICT (chat_id) DO UPDATE SET title=$2, added_by=$3",
-                event.chat.id, event.chat.title, event.from_user.id
-            )
-        await get_group_settings(event.chat.id)
+    if event.chat.type in ["group", "supergroup"]:
+        status = event.new_chat_member.status
+        if status in ["administrator", "member"]:
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO registered_groups (chat_id, title, added_by) VALUES ($1, $2, $3) ON CONFLICT (chat_id) DO UPDATE SET title=$2, added_by=EXCLUDED.added_by",
+                    event.chat.id, event.chat.title, event.from_user.id
+                )
+            await get_group_settings(event.chat.id)
 
 @dp.message(Command("panel"), F.chat.type.in_({"group", "supergroup"}))
 async def open_group_panel_chat(message: types.Message):
-    if not await is_group_admin(bot, message.chat.id, message.from_user.id):
+    user_id = message.from_user.id
+    if not await is_group_admin(bot, message.chat.id, user_id):
         return await message.reply("⚠️ Эта команда доступна только администраторам группы!")
 
     async with db_pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO registered_groups (chat_id, title, added_by) VALUES ($1, $2, $3) ON CONFLICT (chat_id) DO UPDATE SET title=$2, added_by=$3",
-            message.chat.id, message.chat.title, message.from_user.id
+            message.chat.id, message.chat.title, user_id
         )
+    await get_group_settings(message.chat.id)
 
     me = await bot.get_me()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="⚙️ Открыть настройки в ЛС", url=f"https://t.me/{me.username}?start=my_groups")]
     ])
-    await message.reply("⚙️ Для настройки группы перейдите в личные сообщения бота по кнопке ниже:", reply_markup=kb)
+    await message.reply(
+        "✅ <b>Группа успешно зарегистрирована!</b>\n⚙️ Для настройки перейдите в личные сообщения бота по кнопке ниже:", 
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
 
-# Guruhi tark etgan a'zolar xabarini o'chirish
 @dp.message(F.left_chat_member)
 async def delete_left_chat_member_message(message: types.Message):
     try:
@@ -423,17 +430,17 @@ async def track_invites(message: types.Message):
 async def check_permissions(message: types.Message):
     chat_id = message.chat.id
 
-    # 1. Kanal nomidan yozilgan xabarlarni o'tkazib yuborish
+    # Kanal nomidan yozilgan xabarlar
     if message.sender_chat:
         return
 
-    # 2. Yashirin (Anonim) admin xabarlarini o'tkazib yuborish
+    # Anonim adminlar
     if message.from_user and message.from_user.id == 1087968824:
         return
 
     user_id = message.from_user.id
 
-    # 3. Oddiy adminlarni tekshirish
+    # Adminlarni tekshirish
     if await is_group_admin(bot, chat_id, user_id):
         return
 
@@ -441,7 +448,7 @@ async def check_permissions(message: types.Message):
     now = datetime.utcnow()
     user_name = message.from_user.full_name.replace("<", "&lt;").replace(">", "&gt;")
 
-    # 4. Kanalga obunani tekshirish
+    # Kanal obunasini tekshirish
     if not await check_channel_sub(user_id, settings['channel']):
         try:
             await message.delete()
@@ -459,7 +466,7 @@ async def check_permissions(message: types.Message):
         await warning.delete()
         return
 
-    # 5. Odam qo'shganlik holatini tekshirish
+    # Odam qo'shganlik holatini tekshirish
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT invites_count, expires_at FROM group_users WHERE chat_id=$1 AND user_id=$2", 
@@ -502,7 +509,7 @@ async def check_permissions(message: types.Message):
         await asyncio.sleep(settings['delete_delay'])
         await warning.delete()
 
-# --- ВЕБ-СЕРВЕР И ПАРАЛЛЕЛЬНЫЙ ЗАПУСК ---
+# --- VEB-SERVER VA ISHGA TUSHIRISH ---
 async def handle(request):
     return web.Response(text="Bot is active!")
 
@@ -521,13 +528,9 @@ async def start_web_server():
 async def main():
     await init_db()
     
-    # Сброс прошлых обновлений и вебхуков
     await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Пауза для предотвращения конфликта сессий
     await asyncio.sleep(2)
     
-    # Запуск сервера и бот-поллинга
     await asyncio.gather(
         start_web_server(),
         dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(), handle_signals=False)
