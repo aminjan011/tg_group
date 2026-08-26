@@ -349,25 +349,39 @@ async def bot_added_to_group(event: types.ChatMemberUpdated):
     if event.chat.type in ["group", "supergroup"]:
         status = event.new_chat_member.status
         if status in ["administrator", "member"]:
+            user_id = event.from_user.id if event.from_user else 0
             async with db_pool.acquire() as conn:
                 await conn.execute(
-                    "INSERT INTO registered_groups (chat_id, title, added_by) VALUES ($1, $2, $3) ON CONFLICT (chat_id) DO UPDATE SET title=$2, added_by=EXCLUDED.added_by",
-                    event.chat.id, event.chat.title, event.from_user.id
+                    """
+                    INSERT INTO registered_groups (chat_id, title, added_by) 
+                    VALUES ($1, $2, $3) 
+                    ON CONFLICT (chat_id) DO UPDATE SET title=$2, added_by=EXCLUDED.added_by
+                    """,
+                    event.chat.id, event.chat.title, user_id
                 )
             await get_group_settings(event.chat.id)
 
 @dp.message(Command("panel"), F.chat.type.in_({"group", "supergroup"}))
 async def open_group_panel_chat(message: types.Message):
-    user_id = message.from_user.id if message.from_user else None
-    
-    # Yashirin adminlar uchun tekshiruv
-    if not message.sender_chat and user_id and not await is_group_admin(bot, message.chat.id, user_id):
+    is_admin = False
+    if message.sender_chat:
+        is_admin = True
+    elif message.from_user:
+        is_admin = await is_group_admin(bot, message.chat.id, message.from_user.id)
+
+    if not is_admin:
         return await message.reply("⚠️ Эта команда доступна только администраторам группы!")
+
+    user_id = message.from_user.id if message.from_user else 0
 
     async with db_pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO registered_groups (chat_id, title, added_by) VALUES ($1, $2, $3) ON CONFLICT (chat_id) DO UPDATE SET title=$2, added_by=$3",
-            message.chat.id, message.chat.title, user_id or 0
+            """
+            INSERT INTO registered_groups (chat_id, title, added_by) 
+            VALUES ($1, $2, $3) 
+            ON CONFLICT (chat_id) DO UPDATE SET title=$2, added_by=$3
+            """,
+            message.chat.id, message.chat.title, user_id
         )
     await get_group_settings(message.chat.id)
 
@@ -487,10 +501,8 @@ async def check_permissions(message: types.Message):
         invites_count = row['invites_count'] or 0
         expires_at = row['expires_at']
         
-        # Sanoq chekloviga yetgan bo'lsa
         if invites_count >= settings['limit']:
             can_write = True
-        # Yoki hali muddati tugamagan bo'lsa
         elif expires_at is not None:
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
