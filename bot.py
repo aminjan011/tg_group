@@ -413,32 +413,51 @@ async def track_invites(message: types.Message):
         
     settings = await get_group_settings(chat_id)
     
-    for member in message.new_chat_members:
-        if member.id != inviter.id:
-            async with db_pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT invites_count FROM group_users WHERE chat_id=$1 AND user_id=$2", 
-                    chat_id, inviter.id
-                )
-                current_count = row['invites_count'] if row else 0
-                new_count = current_count + 1
-                
-                if new_count >= settings['limit']:
-                    expires_at = datetime.now(timezone.utc) + timedelta(days=settings['days'])
-                    await conn.execute(
-                        "INSERT INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES ($1, $2, $3, $4) ON CONFLICT (chat_id, user_id) DO UPDATE SET invites_count=$3, expires_at=$4",
-                        chat_id, inviter.id, new_count, expires_at
-                    )
-                    user_name = inviter.full_name.replace("<", "&lt;").replace(">", "&gt;")
-                    await message.answer(
-                        f"🎉 {user_name}, вы выполнили условие ({settings['limit']} чел.)! Доступ предоставлен на <b>{settings['days']} дней</b>.",
-                        parse_mode="HTML"
-                    )
-                else:
-                    await conn.execute(
-                        "INSERT INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES ($1, $2, $3, NULL) ON CONFLICT (chat_id, user_id) DO UPDATE SET invites_count=$3",
-                        chat_id, inviter.id, new_count
-                    )
+    # Qo'shilgan har bir yangi a'zo uchun
+    added_count = len([m for m in message.new_chat_members if m.id != inviter.id])
+    if added_count == 0:
+        return
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT invites_count, expires_at FROM group_users WHERE chat_id=$1 AND user_id=$2", 
+            chat_id, inviter.id
+        )
+        current_count = row['invites_count'] if row else 0
+        new_count = current_count + added_count
+        
+        # Agarda belgilangan limitga yetsa yoki oshsa:
+        if new_count >= settings['limit']:
+            expires_at = datetime.now(timezone.utc) + timedelta(days=settings['days'])
+            await conn.execute(
+                """
+                INSERT INTO group_users (chat_id, user_id, invites_count, expires_at) 
+                VALUES ($1, $2, $3, $4) 
+                ON CONFLICT (chat_id, user_id) 
+                DO UPDATE SET invites_count=$3, expires_at=$4
+                """,
+                chat_id, inviter.id, new_count, expires_at
+            )
+            user_name = inviter.full_name.replace("<", "&lt;").replace(">", "&gt;")
+            msg = await message.answer(
+                f"🎉 {user_name}, вы выполнили условие ({settings['limit']} чел.)! Доступ предоставлен на <b>{settings['days']} дней</b>.",
+                parse_mode="HTML"
+            )
+            await asyncio.sleep(settings['delete_delay'])
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+        else:
+            await conn.execute(
+                """
+                INSERT INTO group_users (chat_id, user_id, invites_count, expires_at) 
+                VALUES ($1, $2, $3, NULL) 
+                ON CONFLICT (chat_id, user_id) 
+                DO UPDATE SET invites_count=$3
+                """,
+                chat_id, inviter.id, new_count
+            )
 
     try:
         await message.delete()
@@ -501,14 +520,26 @@ async def check_permissions(message: types.Message):
         invites_count = row['invites_count'] or 0
         expires_at = row['expires_at']
         
-        if invites_count >= settings['limit']:
-            can_write = True
-        elif expires_at is not None:
+        # Tekshiruv: agar muddat berilgan bo'lsa
+        if expires_at is not None:
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
             
+            # Muddat hali tugamagan bo'lsa:
             if now < expires_at:
                 can_write = True
+            else:
+                # Muddat tugagan bo'lsa, hisobni nolga tushiramiz
+                async with db_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE group_users SET expires_at=NULL, invites_count=0 WHERE chat_id=$1 AND user_id=$2", 
+                        chat_id, user_id
+                    )
+                can_write = False
+                invites_count = 0
+        # Agar yetarlicha odam qo'shgan bo'lsa:
+        elif invites_count >= settings['limit']:
+            can_write = True
 
     if not can_write:
         try:
