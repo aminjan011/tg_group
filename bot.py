@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import asyncpg
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -53,7 +53,7 @@ async def init_db():
                 chat_id BIGINT,
                 user_id BIGINT,
                 invites_count INT DEFAULT 0,
-                expires_at TIMESTAMP,
+                expires_at TIMESTAMP WITH TIME ZONE,
                 PRIMARY KEY (chat_id, user_id)
             );
             CREATE TABLE IF NOT EXISTS registered_groups (
@@ -79,6 +79,9 @@ async def get_group_settings(chat_id: int):
             return {"limit": 3, "days": 7, "channel": "", "delete_delay": 5}
 
 async def is_group_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
+    # Anonim admin ID si bo'lsa darhol True qaytariladi
+    if user_id == 1087968824:
+        return True
     try:
         member = await bot.get_chat_member(chat_id, user_id)
         return member.status in ["administrator", "creator"]
@@ -405,13 +408,13 @@ async def track_invites(message: types.Message):
                 new_count = current_count + 1
                 
                 if new_count >= settings['limit']:
-                    expires_at = datetime.utcnow() + timedelta(days=settings['days'])
+                    expires_at = datetime.now(timezone.utc) + timedelta(days=settings['days'])
                     await conn.execute(
                         "INSERT INTO group_users (chat_id, user_id, invites_count, expires_at) VALUES ($1, $2, $3, $4) ON CONFLICT (chat_id, user_id) DO UPDATE SET invites_count=$3, expires_at=$4",
                         chat_id, inviter.id, new_count, expires_at
                     )
                     user_name = inviter.full_name.replace("<", "&lt;").replace(">", "&gt;")
-                    await message.answer(
+                    msg = await message.answer(
                         f"🎉 {user_name}, вы выполнили условие ({settings['limit']} чел.)! Доступ предоставлен на <b>{settings['days']} дней</b>.",
                         parse_mode="HTML"
                     )
@@ -430,22 +433,17 @@ async def track_invites(message: types.Message):
 async def check_permissions(message: types.Message):
     chat_id = message.chat.id
 
-    # Kanal nomidan yozilgan xabarlar
+    # Kanal nomidan kelgan xabarlar
     if message.sender_chat:
         return
 
-    # Anonim adminlar
-    if message.from_user and message.from_user.id == 1087968824:
+    # Anonim adminlar yoki oddiy adminlar
+    if message.from_user and await is_group_admin(bot, chat_id, message.from_user.id):
         return
 
     user_id = message.from_user.id
-
-    # Adminlarni tekshirish
-    if await is_group_admin(bot, chat_id, user_id):
-        return
-
     settings = await get_group_settings(chat_id)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     user_name = message.from_user.full_name.replace("<", "&lt;").replace(">", "&gt;")
 
     # Kanal obunasini tekshirish
@@ -463,7 +461,10 @@ async def check_permissions(message: types.Message):
             f"⚠️ <b>{user_name}</b>, чтобы писать в группу, сначала подпишитесь на обязательный канал!", reply_markup=kb, parse_mode="HTML"
         )
         await asyncio.sleep(settings['delete_delay'])
-        await warning.delete()
+        try:
+            await warning.delete()
+        except Exception:
+            pass
         return
 
     # Odam qo'shganlik holatini tekshirish
@@ -480,11 +481,10 @@ async def check_permissions(message: types.Message):
         invites_count = row['invites_count'] or 0
         expires_at = row['expires_at']
         
-        if invites_count >= settings['limit']:
-            can_write = True
-        elif expires_at:
-            if expires_at.tzinfo is not None:
-                expires_at = expires_at.replace(tzinfo=None)
+        if expires_at is not None:
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            
             if now < expires_at:
                 can_write = True
             else:
@@ -494,6 +494,8 @@ async def check_permissions(message: types.Message):
                         chat_id, user_id
                     )
                 can_write = False
+        elif invites_count >= settings['limit']:
+            can_write = True
 
     if not can_write:
         try:
@@ -507,7 +509,10 @@ async def check_permissions(message: types.Message):
             parse_mode="HTML"
         )
         await asyncio.sleep(settings['delete_delay'])
-        await warning.delete()
+        try:
+            await warning.delete()
+        except Exception:
+            pass
 
 # --- VEB-SERVER VA ISHGA TUSHIRISH ---
 async def handle(request):
